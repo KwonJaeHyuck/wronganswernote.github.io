@@ -1164,6 +1164,8 @@ input{font-family:inherit; outline:none;}
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
   import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-analytics.js";
   import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
+  // Firestore(클라우드 동기화) 모듈 추가
+  import { getFirestore, doc, getDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
   // 📌 발급받으신 실제 설정값
   const firebaseConfig = {
@@ -1180,7 +1182,12 @@ input{font-family:inherit; outline:none;}
   const app = initializeApp(firebaseConfig);
   const analytics = getAnalytics(app);
   const auth = getAuth(app);
+  const db = getFirestore(app);
   const provider = new GoogleAuthProvider();
+
+  // ── 모듈 스코프의 Firestore 핸들을 일반 <script>(앱 로직)에서 쓸 수 있도록 window에 노출 ──
+  // (module 스크립트와 classic 스크립트는 스코프가 분리되어 있으므로 window를 브리지로 사용)
+  window.firestoreAPI = { db, doc, getDoc, setDoc, deleteDoc };
 
   // 로그인 함수
   window.loginWithGoogle = () => {
@@ -1210,24 +1217,44 @@ input{font-family:inherit; outline:none;}
 
   // 로그인 상태 감지
   let appInitialized = false;
-  onAuthStateChanged(auth, (user) => {
+  onAuthStateChanged(auth, async (user) => {
     const overlay = document.getElementById('authOverlay');
     if (user) {
-      // 로그인 성공 시 오버레이 숨김
-      overlay.style.opacity = '0';
-      setTimeout(() => overlay.style.display = 'none', 300);
-      
+      // uid를 앱 로직에 전달 (Firestore 경로 users/{uid}/... 에 사용)
+      window.currentUid = user.uid;
+
       // 우측 상단 유저 정보 업데이트
       document.getElementById('profileName').textContent = user.displayName || '사용자';
       document.getElementById('profileEmail').textContent = user.email || '';
-      
-      // 앱 초기화 실행 (중복 방지)
-      if(!appInitialized && typeof initApp === 'function') {
-        initApp();
-        appInitialized = true;
+
+      // 데이터를 불러오는 동안 오버레이를 닫지 않고 로딩 상태로 전환 (빈 화면 방지)
+      const loginBtn = document.getElementById('googleLoginBtn');
+      if (loginBtn) {
+        loginBtn.innerHTML = '데이터를 불러오는 중...';
+        loginBtn.style.pointerEvents = 'none';
       }
+
+      try {
+        // 앱 초기화 (중복 방지). Firestore 로드가 끝날 때까지 await 으로 순서 보장
+        if (!appInitialized && typeof window.bootstrapUserData === 'function') {
+          await window.bootstrapUserData();   // 카테고리 + 자격증 데이터 로드 → initApp → 대시보드 렌더
+          appInitialized = true;
+        }
+      } catch (e) {
+        console.error('초기 데이터 로드 실패:', e);
+        alert('데이터를 불러오는 중 오류가 발생했습니다. 새로고침 후 다시 시도해주세요.');
+      }
+
+      // 데이터 로드 및 렌더링 완료 후 오버레이 페이드아웃
+      overlay.style.opacity = '0';
+      setTimeout(() => overlay.style.display = 'none', 300);
     } else {
-      // 로그아웃 상태면 오버레이 표시
+      // 로그아웃 상태: 이전 사용자 데이터가 메모리에 남지 않도록 새로고침하여 초기화
+      window.currentUid = null;
+      if (appInitialized) {
+        location.reload();
+        return;
+      }
       overlay.style.display = 'flex';
       overlay.style.opacity = '1';
     }
@@ -1528,12 +1555,12 @@ input{font-family:inherit; outline:none;}
 
 <script>
 // ========== STATE & GLOBAL ==========
-const CAT_STORAGE_KEY = 'multiNotebook_categories';
-
-// 앱 초기 기본 카테고리는 사용자의 포커스에 맞춰 '공조냉동기계산업기사'로 설정합니다.
-let certCategories = JSON.parse(localStorage.getItem(CAT_STORAGE_KEY)) || [
+// 기본 카테고리(최초 사용자 시드용). 실제 목록은 Firestore(users/{uid})에서 로드됩니다.
+const DEFAULT_CATEGORIES = [
   { id: 'gongjo', name: '공조냉동기계산업기사' }
 ];
+// certCategories 는 로그인 후 bootstrapUserData() 에서 Firestore 값으로 채워집니다.
+let certCategories = [];
 
 let currentCert = null; 
 const questions = [];
@@ -1552,17 +1579,52 @@ let selectedQuizRounds = new Set(['all']);
 let parsedQuestions = [];
 let selectedRefCategory = 'all';
 
-// ========== STORAGE WRAPPER ==========
-const _ls = window.localStorage;
-function getStorageKey() { return `multiNotebook_data_${currentCert}`; }
-function getCustomKey() { return `multiNotebook_custom_${currentCert}`; }
+// ========== FIRESTORE WRAPPER ==========
+// module 스크립트에서 window.firestoreAPI / window.currentUid 로 노출된 핸들을 사용
+function _fs()  { return window.firestoreAPI; }            // { db, doc, getDoc, setDoc, deleteDoc }
+function _uid() { return window.currentUid; }
+
+// 스키마: users/{uid}                         -> { categories: [...] }
+//        users/{uid}/certifications/{certId}  -> { progress: {...}, customQuestions: [...] }
+function _userDocRef()        { const fs = _fs(); return fs.doc(fs.db, 'users', _uid()); }
+function _certDocRef(certId)  { const fs = _fs(); return fs.doc(fs.db, 'users', _uid(), 'certifications', certId); }
+
+// switchCert 가 자격증 문서를 1회 읽어 캐시 -> load 함수들이 재사용 (불필요한 중복 read 방지)
+let _loadedCertData = null;
 
 // ========== APP INIT ==========
-function initApp() {
+// onAuthStateChanged 에서 호출됨: 카테고리 로드 -> initApp -> 대시보드 렌더 순서 보장
+window.bootstrapUserData = async function () {
+  const fs = _fs();
+  try {
+    const snap = await fs.getDoc(_userDocRef());
+    if (snap.exists() && Array.isArray(snap.data().categories) && snap.data().categories.length > 0) {
+      certCategories = snap.data().categories;
+    } else {
+      // 최초 사용자: 기본 카테고리를 시드하고 클라우드에 저장
+      certCategories = DEFAULT_CATEGORIES.slice();
+      await saveCategories();
+    }
+  } catch (e) {
+    console.error('카테고리 로드 실패:', e);
+    certCategories = DEFAULT_CATEGORIES.slice();
+  }
+  await initApp();
+};
+
+// 카테고리 목록을 users/{uid} 문서에 저장
+async function saveCategories() {
+  if (!_uid()) return;
+  try {
+    await _fs().setDoc(_userDocRef(), { categories: certCategories, updatedAt: new Date().toISOString() }, { merge: true });
+  } catch (e) { console.error('카테고리 저장 실패:', e); }
+}
+
+async function initApp() {
   renderCertTabs();
-  // 첫 번째 카테고리로 자동 선택
+  // 첫 번째 카테고리로 자동 선택 (데이터 로드까지 await)
   if (certCategories.length > 0) {
-    switchCert(certCategories[0].id);
+    await switchCert(certCategories[0].id);
   } else {
     document.getElementById('dashTitle').textContent = '카테고리를 추가해주세요.';
     document.getElementById('dashSubtitle').textContent = '상단의 [+] 버튼을 눌러 자격증을 추가하세요.';
@@ -1601,47 +1663,51 @@ function renderCategoryManagerList() {
   `).join('');
 }
 
-function addNewCategory() {
+async function addNewCategory() {
   const input = document.getElementById('newCatName');
   const name = input.value.trim();
   if(!name) return;
-  
+
   const newId = 'cert_' + Date.now();
   certCategories.push({ id: newId, name: name });
-  _ls.setItem(CAT_STORAGE_KEY, JSON.stringify(certCategories));
-  
+  await saveCategories();
+
   input.value = '';
   renderCategoryManagerList();
   renderCertTabs();
-  
+
   // 첫 카테고리면 자동 이동
-  if(certCategories.length === 1) switchCert(newId);
+  if(certCategories.length === 1) await switchCert(newId);
 }
 
-function deleteCategory(id, name) {
+async function deleteCategory(id, name) {
   if(!confirm(`[${name}] 카테고리를 삭제하시겠습니까?\n이 자격증에 속한 모든 오답 및 기출 데이터가 영구 삭제됩니다!`)) return;
-  
-  // 데이터 삭제
-  _ls.removeItem(`multiNotebook_data_${id}`);
-  _ls.removeItem(`multiNotebook_custom_${id}`);
-  
-  // 배열에서 제거
+
+  // 클라우드 데이터 삭제 (progress + customQuestions 는 동일 문서에 저장되므로 1회 삭제)
+  try { await _fs().deleteDoc(_certDocRef(id)); }
+  catch (e) { console.error('자격증 데이터 삭제 실패:', e); }
+
+  // 배열에서 제거 후 카테고리 목록 저장
   certCategories = certCategories.filter(c => c.id !== id);
-  _ls.setItem(CAT_STORAGE_KEY, JSON.stringify(certCategories));
-  
+  await saveCategories();
+
   renderCategoryManagerList();
   renderCertTabs();
 
   if (currentCert === id) {
-    if (certCategories.length > 0) switchCert(certCategories[0].id);
-    else { currentCert = null; location.reload(); }
+    // 삭제된 자격증이 현재 선택 상태라면, switchCert 의 사전 저장이 방금 삭제한 문서를
+    // 다시 만들지 않도록 currentCert 를 비운 뒤 전환한다.
+    currentCert = null;
+    if (certCategories.length > 0) await switchCert(certCategories[0].id);
+    else { location.reload(); }
   }
 }
 
 // ========== CERTIFICATE SWITCH LOGIC ==========
-function switchCert(certId) {
+async function switchCert(certId) {
   if (currentCert === certId) return;
-  if (currentCert) { saveToStorage(); saveCustomQuestions(); }
+  // 이전 자격증 저장 (progress + customQuestions 가 한 문서에 통합 저장됨)
+  if (currentCert) { await saveToStorage(); }
 
   currentCert = certId;
   const targetCat = certCategories.find(c => c.id === certId);
@@ -1659,9 +1725,10 @@ function switchCert(certId) {
   sessionAttempts = 0; sessionCorrect = 0; quizState = null;
   selectedQuizRounds = new Set(['all']);
   
-  // Load Data
-  loadCustomQuestions(); 
-  loadFromStorage();
+  // Load Data: 자격증 문서를 1회 읽어 캐시한 뒤, 커스텀 문제 -> 진도 순으로 반영
+  _loadedCertData = await loadCertData(certId);
+  await loadCustomQuestions(); 
+  await loadFromStorage();
   _allQuestions = questions.slice();
 
   showSection('dashboard');
@@ -1727,64 +1794,79 @@ function closeMobile() {
   if(document.getElementById('mobileMenu').classList.contains('visible')) toggleMobile();
 }
 
-// ========== LOCAL STORAGE ==========
-function saveToStorage() {
-  if(!currentCert) return;
-  try {
-    const data = {
-      wrongCounts: {},
+// ========== CLOUD STORAGE (Firestore) ==========
+// 현재 자격증 1개 문서에 진도(progress)와 추가문제(customQuestions)를 함께 저장
+function _buildCertPayload() {
+  const wrongCounts = {};
+  questions.forEach(q => { if (q.wrongCount > 0) wrongCounts[q.id] = q.wrongCount; });
+  return {
+    progress: {
+      wrongCounts: wrongCounts,
       sessionAttempts: sessionAttempts,
       sessionCorrect: sessionCorrect,
       roundHistory: roundHistory,
       currentRound: currentRound,
-      currentRoundWrong: currentRoundWrong,
-      savedAt: new Date().toISOString()
-    };
+      currentRoundWrong: currentRoundWrong
+    },
+    customQuestions: customQuestions,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+// 항상 현재 메모리 상태 전체를 1회 쓰기로 동기화 -> 부분 병합으로 인한 잔여 키/덮어쓰기 문제 없음
+async function _persistCurrentCert() {
+  if (!currentCert || !_uid()) return;
+  try {
+    await _fs().setDoc(_certDocRef(currentCert), _buildCertPayload());
+  } catch (e) { console.error('저장 실패:', e); }
+}
+
+// 자격증 문서 1회 읽기 (switchCert 가 호출하여 캐시)
+async function loadCertData(certId) {
+  if (!certId || !_uid()) return null;
+  try {
+    const snap = await _fs().getDoc(_certDocRef(certId));
+    return snap.exists() ? snap.data() : null;
+  } catch (e) { console.error('자격증 데이터 로드 실패:', e); return null; }
+}
+
+// 진도(오답/회독) 저장
+async function saveToStorage() { return _persistCurrentCert(); }
+
+// 추가 문제(커스텀) 저장 — 동일 문서에 통합되므로 진도 저장과 같은 처리
+async function saveCustomQuestions() { return _persistCurrentCert(); }
+
+// 진도(오답/회독) 로드 — switchCert 가 미리 읽어둔 캐시 우선, 없으면 직접 조회
+async function loadFromStorage() {
+  if (!currentCert) return;
+  const cert = _loadedCertData ?? await loadCertData(currentCert);
+  const data = cert && cert.progress;
+  if (!data) return;
+
+  if (Array.isArray(data.roundHistory)) roundHistory = data.roundHistory;
+  if (typeof data.currentRound === 'number') currentRound = data.currentRound;
+  if (data.currentRoundWrong) currentRoundWrong = data.currentRoundWrong;
+  if (typeof data.sessionAttempts === 'number') sessionAttempts = data.sessionAttempts;
+  if (typeof data.sessionCorrect === 'number') sessionCorrect = data.sessionCorrect;
+
+  const savedRound = typeof data.currentRound === 'number' ? data.currentRound : 1;
+  if (data.wrongCounts && savedRound === currentRound) {
     questions.forEach(q => {
-      if (q.wrongCount > 0) data.wrongCounts[q.id] = q.wrongCount;
+      if (data.wrongCounts[q.id] !== undefined) q.wrongCount = data.wrongCounts[q.id];
     });
-    _ls.setItem(getStorageKey(), JSON.stringify(data));
-  } catch(e) {}
+  }
 }
 
-function loadFromStorage() {
-  if(!currentCert) return;
-  try {
-    const raw = _ls.getItem(getStorageKey());
-    if (!raw) return;
-    const data = JSON.parse(raw);
-
-    if (Array.isArray(data.roundHistory)) roundHistory = data.roundHistory;
-    if (typeof data.currentRound === 'number') currentRound = data.currentRound;
-    if (data.currentRoundWrong) currentRoundWrong = data.currentRoundWrong;
-    if (typeof data.sessionAttempts === 'number') sessionAttempts = data.sessionAttempts;
-    if (typeof data.sessionCorrect === 'number') sessionCorrect = data.sessionCorrect;
-
-    const savedRound = typeof data.currentRound === 'number' ? data.currentRound : 1;
-    if (data.wrongCounts && savedRound === currentRound) {
-      questions.forEach(q => {
-        if (data.wrongCounts[q.id] !== undefined) q.wrongCount = data.wrongCounts[q.id];
-      });
-    }
-  } catch(e) {}
-}
-
-function loadCustomQuestions() {
-  if(!currentCert) return;
-  try {
-    const raw = _ls.getItem(getCustomKey());
-    if (!raw) return;
-    customQuestions = JSON.parse(raw);
-    customQuestions.forEach(cq => {
-      const exists = questions.find(q => q.id === cq.id);
-      if (!exists) questions.push(cq);
-    });
-  } catch(e) {}
-}
-
-function saveCustomQuestions() {
-  if(!currentCert) return;
-  try { _ls.setItem(getCustomKey(), JSON.stringify(customQuestions)); } catch(e) {}
+// 추가 문제(커스텀) 로드
+async function loadCustomQuestions() {
+  if (!currentCert) return;
+  const cert = _loadedCertData ?? await loadCertData(currentCert);
+  if (!cert || !Array.isArray(cert.customQuestions)) return;
+  customQuestions = cert.customQuestions;
+  customQuestions.forEach(cq => {
+    const exists = questions.find(q => q.id === cq.id);
+    if (!exists) questions.push(cq);
+  });
 }
 
 // ========== DASHBOARD ==========
@@ -2033,7 +2115,7 @@ function confirmNewRound(btn) {
 
   questions.length = 0;
   customQuestions = [];
-  _ls.removeItem(getCustomKey()); 
+  // customQuestions 가 비워졌으므로 아래 saveToStorage() 가 빈 배열을 포함한 문서 전체를 저장함
   _allQuestions = [];
 
   sessionAttempts = 0; sessionCorrect = 0;
@@ -2607,18 +2689,23 @@ function exportData() {
 function importData(e) {
   const f = e.target.files[0]; if(!f) return;
   const r = new FileReader();
-  r.onload = function(evt) {
+  r.onload = async function(evt) {
     try {
       const d = JSON.parse(evt.target.result);
       if(confirm('데이터를 덮어씌우시겠습니까?')) {
-        if(d.customQuestions) _ls.setItem(getCustomKey(), JSON.stringify(d.customQuestions));
-        _ls.setItem(getStorageKey(), JSON.stringify({
-          wrongCounts: d.wrongCounts||{}, sessionAttempts: d.sessionAttempts||0, sessionCorrect: d.sessionCorrect||0,
-          roundHistory: d.roundHistory||[], currentRound: d.currentRound||1, currentRoundWrong: d.currentRoundWrong||{}
-        }));
+        if (!currentCert || !_uid()) { alert('먼저 자격증을 선택해주세요.'); return; }
+        const payload = {
+          progress: {
+            wrongCounts: d.wrongCounts||{}, sessionAttempts: d.sessionAttempts||0, sessionCorrect: d.sessionCorrect||0,
+            roundHistory: d.roundHistory||[], currentRound: d.currentRound||1, currentRoundWrong: d.currentRoundWrong||{}
+          },
+          customQuestions: Array.isArray(d.customQuestions) ? d.customQuestions : [],
+          updatedAt: new Date().toISOString()
+        };
+        await _fs().setDoc(_certDocRef(currentCert), payload);
         alert('완료! 새로고침합니다.'); location.reload();
       }
-    } catch(err) { alert('파일 오류'); }
+    } catch(err) { console.error(err); alert('파일 오류'); }
   };
   r.readAsText(f);
 }
