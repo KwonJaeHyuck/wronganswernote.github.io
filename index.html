@@ -1197,8 +1197,9 @@ input{font-family:inherit; outline:none;}
 
     signInWithPopup(auth, provider).catch((error) => {
       console.error("Login Error:", error);
-      alert("로그인 중 오류가 발생했습니다: " + error.message);
-      
+      if (typeof showToast === 'function') showToast('로그인 중 오류: ' + error.message, true);
+      else alert('로그인 중 오류가 발생했습니다: ' + error.message);
+
       // 오류 발생 시 버튼 원상복구
       btn.innerHTML = '<svg viewBox="0 0 48 48"> <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/> <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/> <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/> <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/> </svg> 구글 계정으로 로그인';
       btn.style.pointerEvents = 'auto';
@@ -1207,12 +1208,12 @@ input{font-family:inherit; outline:none;}
 
   // 로그아웃 함수
   window.logoutGoogle = () => {
-    if(confirm("로그아웃 하시겠습니까?")) {
+    showConfirmModal('로그아웃', '로그아웃 하시겠습니까?', () => {
       signOut(auth).then(() => {
         document.getElementById('authOverlay').style.display = 'flex';
         document.getElementById('authOverlay').style.opacity = '1';
       });
-    }
+    });
   };
 
   // 로그인 상태 감지
@@ -1242,7 +1243,8 @@ input{font-family:inherit; outline:none;}
         }
       } catch (e) {
         console.error('초기 데이터 로드 실패:', e);
-        alert('데이터를 불러오는 중 오류가 발생했습니다. 새로고침 후 다시 시도해주세요.');
+        if (typeof showToast === 'function') showToast('데이터를 불러오는 중 오류가 발생했습니다. 새로고침 후 다시 시도해주세요.', true);
+        else alert('데이터를 불러오는 중 오류가 발생했습니다. 새로고침 후 다시 시도해주세요.');
       }
 
       // 데이터 로드 및 렌더링 완료 후 오버레이 페이드아웃
@@ -1578,6 +1580,8 @@ let customQuestions = [];
 let selectedQuizRounds = new Set(['all']);
 let parsedQuestions = [];
 let selectedRefCategory = 'all';
+let certTagList = [];
+let certConceptList = [];
 
 // ========== FIRESTORE WRAPPER ==========
 // module 스크립트에서 window.firestoreAPI / window.currentUid 로 노출된 핸들을 사용
@@ -1680,27 +1684,33 @@ async function addNewCategory() {
   if(certCategories.length === 1) await switchCert(newId);
 }
 
-async function deleteCategory(id, name) {
-  if(!confirm(`[${name}] 카테고리를 삭제하시겠습니까?\n이 자격증에 속한 모든 오답 및 기출 데이터가 영구 삭제됩니다!`)) return;
+function deleteCategory(id, name) {
+  showConfirmModal(
+    '카테고리 삭제',
+    `[${escapeHtml(name)}] 카테고리를 삭제하시겠습니까?<br>이 자격증에 속한 모든 오답 및 기출 데이터가 영구 삭제됩니다!`,
+    async () => {
+      // 클라우드 데이터 삭제 (progress + customQuestions 는 동일 문서에 저장되므로 1회 삭제)
+      try { await _fs().deleteDoc(_certDocRef(id)); }
+      catch (e) { console.error('자격증 데이터 삭제 실패:', e); }
 
-  // 클라우드 데이터 삭제 (progress + customQuestions 는 동일 문서에 저장되므로 1회 삭제)
-  try { await _fs().deleteDoc(_certDocRef(id)); }
-  catch (e) { console.error('자격증 데이터 삭제 실패:', e); }
+      // 배열에서 제거 후 카테고리 목록 저장
+      certCategories = certCategories.filter(c => c.id !== id);
+      await saveCategories();
 
-  // 배열에서 제거 후 카테고리 목록 저장
-  certCategories = certCategories.filter(c => c.id !== id);
-  await saveCategories();
+      renderCategoryManagerList();
+      renderCertTabs();
 
-  renderCategoryManagerList();
-  renderCertTabs();
-
-  if (currentCert === id) {
-    // 삭제된 자격증이 현재 선택 상태라면, switchCert 의 사전 저장이 방금 삭제한 문서를
-    // 다시 만들지 않도록 currentCert 를 비운 뒤 전환한다.
-    currentCert = null;
-    if (certCategories.length > 0) await switchCert(certCategories[0].id);
-    else { location.reload(); }
-  }
+      if (currentCert === id) {
+        // 삭제된 자격증이 현재 선택 상태라면, switchCert 의 사전 저장이 방금 삭제한 문서를
+        // 다시 만들지 않도록 currentCert 를 비운 뒤 전환한다.
+        currentCert = null;
+        if (certCategories.length > 0) await switchCert(certCategories[0].id);
+        else { location.reload(); }
+      }
+      showToast(`[${name}] 카테고리 삭제 완료.`);
+    },
+    { danger: true, okLabel: '삭제' }
+  );
 }
 
 // ========== CERTIFICATE SWITCH LOGIC ==========
@@ -1725,9 +1735,10 @@ async function switchCert(certId) {
   sessionAttempts = 0; sessionCorrect = 0; quizState = null;
   selectedQuizRounds = new Set(['all']);
   
-  // Load Data: 자격증 문서를 1회 읽어 캐시한 뒤, 커스텀 문제 -> 진도 순으로 반영
+  // Load Data: 자격증 문서를 1회 읽어 캐시한 뒤, 태그·개념 목록 -> 커스텀 문제 -> 진도 순으로 반영
   _loadedCertData = await loadCertData(certId);
-  await loadCustomQuestions(); 
+  await loadTagConceptLists();
+  await loadCustomQuestions();
   await loadFromStorage();
   _allQuestions = questions.slice();
 
@@ -1809,6 +1820,8 @@ function _buildCertPayload() {
       currentRoundWrong: currentRoundWrong
     },
     customQuestions: customQuestions,
+    tagList: certTagList,
+    conceptList: certConceptList,
     updatedAt: new Date().toISOString()
   };
 }
@@ -1869,6 +1882,31 @@ async function loadCustomQuestions() {
   });
 }
 
+// tag/concept 목록 로드 — switchCert 가 캐시해둔 자격증 문서를 재사용(추가 Firestore read 없음)
+async function loadTagConceptLists() {
+  certTagList = []; certConceptList = [];
+  if (!currentCert) return;
+  const cert = _loadedCertData ?? await loadCertData(currentCert);
+  if (!cert) return;
+  if (Array.isArray(cert.tagList)) certTagList = cert.tagList.filter(t => typeof t === 'string');
+  if (Array.isArray(cert.conceptList)) certConceptList = cert.conceptList.filter(c => typeof c === 'string');
+}
+
+// 기존 목록에 대소문자·공백 무시 매칭되는 항목이 있으면 그 표기를 그대로 재사용,
+// 없을 때만 신규 등록 — concept 자유 텍스트 파편화 방지.
+// Firestore 쓰기는 여기서 하지 않는다 — 호출부가 이후 saveCustomQuestions()/saveToStorage()로
+// 전체 문서를 저장할 때 이 목록도 함께 반영된다 (호출마다 매번 네트워크 쓰기 방지).
+function registerListItem(list, name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return '';
+  const existing = list.find(t => t.toLowerCase() === trimmed.toLowerCase());
+  if (existing) return existing;
+  list.push(trimmed);
+  return trimmed;
+}
+function registerTag(name) { return registerListItem(certTagList, name); }
+function registerConcept(name) { return registerListItem(certConceptList, name); }
+
 // ========== DASHBOARD ==========
 function renderDashboard() {
   const total = questions.length;
@@ -1891,7 +1929,7 @@ function renderDashboard() {
 
   renderRoundPanel();
 
-  const sorted = [...questions].sort((a, b) => b.wrongCount - a.wrongCount || a.answerRate - b.answerRate);
+  const sorted = [...questions].sort((a, b) => b.wrongCount - a.wrongCount || (a.answerRate ?? 101) - (b.answerRate ?? 101));
   const top5 = sorted.slice(0, 5);
   const container = document.getElementById('dashMostWrong');
 
@@ -1905,8 +1943,8 @@ function renderDashboard() {
     container.innerHTML = top5.filter(q => q.wrongCount > 0).map(q => `
       <div class="most-wrong-item" onclick="goToNote(${q.id})">
         <div class="wrong-badge">${q.wrongCount}회</div>
-        <div class="wrong-question"><span style="color:var(--text-muted);font-size:11px">${q.year}/${q.round}회</span> ${q.number}번. ${q.question}</div>
-        <div class="wrong-rate">정답률 ${q.answerRate || 0}%</div>
+        <div class="wrong-question"><span style="color:var(--text-muted);font-size:11px">${q.year}/${q.round}회</span> ${q.number}번. ${escapeHtml(q.question)}</div>
+        <div class="wrong-rate">${q.answerRate != null ? `정답률 ${q.answerRate}%` : '정답률 미확인'}</div>
       </div>
     `).join('');
   }
@@ -1955,19 +1993,32 @@ function renderRoundPanel() {
   `).join('');
 }
 
+// 오답 문제 목록은 별도 전체 복사본(wrongQuestions)으로 중복 저장하지 않고,
+// allQuestions(회독 시점 전체 스냅샷)에서 id로 걸러내 도출한다 — 저장량 절반 절감
+function getRoundWrongIds(rec) {
+  if (rec.wrongIds && rec.wrongIds.length > 0) return rec.wrongIds.map(Number);
+  if (rec.wrongCountSnapshot) return Object.keys(rec.wrongCountSnapshot).filter(id => rec.wrongCountSnapshot[id] > 0).map(Number);
+  // 구버전 데이터(wrongIds/wrongCountSnapshot 없이 wrongQuestions만 있던 시절) 호환
+  if (rec.wrongQuestions && rec.wrongQuestions.length > 0) return rec.wrongQuestions.map(q => Number(q.id));
+  return [];
+}
+// 회독 시점 전체 문제 풀 — allQuestions(신버전 스냅샷) → wrongQuestions(구버전, 오답만이라도) → 현재 살아있는 풀
+function getRoundAllQuestions(rec) {
+  if (rec.allQuestions && rec.allQuestions.length > 0) return rec.allQuestions;
+  if (rec.wrongQuestions && rec.wrongQuestions.length > 0) return rec.wrongQuestions;
+  return _allQuestions;
+}
+function getRoundWrongQuestions(rec) {
+  const ids = getRoundWrongIds(rec);
+  return getRoundAllQuestions(rec).filter(q => ids.includes(Number(q.id)));
+}
+
 function showRoundFolder(roundNum) {
   const rec = roundHistory.find(r => r.roundNum === roundNum);
   if (!rec) return;
 
-  const ids = (() => {
-    if (rec.wrongIds && rec.wrongIds.length > 0) return rec.wrongIds.map(Number);
-    if (rec.wrongCountSnapshot) return Object.keys(rec.wrongCountSnapshot).filter(id => rec.wrongCountSnapshot[id] > 0).map(Number);
-    return [];
-  })();
-
-  const wrongQs = (rec.wrongQuestions && rec.wrongQuestions.length > 0)
-    ? rec.wrongQuestions
-    : _allQuestions.filter(q => ids.includes(Number(q.id)));
+  const ids = getRoundWrongIds(rec);
+  const wrongQs = getRoundWrongQuestions(rec);
 
   const modal = document.createElement('div');
   modal.id = 'roundFolderModal';
@@ -1988,7 +2039,7 @@ function showRoundFolder(roundNum) {
       <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <button onclick="startRoundAllQuiz(${roundNum})"
           style="flex:1;padding:12px;background:linear-gradient(135deg,var(--accent),#0096c7);color:#fff;border:none;border-radius:var(--radius-md);font-size:14px;font-weight:700;cursor:pointer;min-width:140px">
-          📚 전체 ${rec.allQuestions ? rec.allQuestions.length : (rec.totalQuestions || '?')}문제 풀기
+          📚 전체 ${getRoundAllQuestions(rec).length}문제 풀기
         </button>
         ${wrongQs.length > 0 ? `
         <button onclick="startRoundReview(${roundNum})"
@@ -2020,7 +2071,7 @@ function showRoundFolder(roundNum) {
 function startRoundAllQuiz(roundNum) {
   const rec = roundHistory.find(r => r.roundNum === roundNum);
   if (!rec) return;
-  let allQs = (rec.allQuestions && rec.allQuestions.length > 0) ? rec.allQuestions : _allQuestions;
+  let allQs = getRoundAllQuestions(rec);
   if (allQs.length === 0) { showToast('풀 문제가 없습니다.', true); return; }
   const modal = document.getElementById('roundFolderModal');
   if (modal) modal.remove();
@@ -2043,14 +2094,7 @@ function startRoundReview(roundNum) {
   const rec = roundHistory.find(r => r.roundNum === roundNum);
   if (!rec) return;
 
-  const ids = (() => {
-    if (rec.wrongIds && rec.wrongIds.length > 0) return rec.wrongIds.map(Number);
-    if (rec.wrongCountSnapshot) return Object.keys(rec.wrongCountSnapshot).filter(id => rec.wrongCountSnapshot[id] > 0).map(Number);
-    return [];
-  })();
-
-  let reviewQs = (rec.wrongQuestions && rec.wrongQuestions.length > 0)
-    ? rec.wrongQuestions : _allQuestions.filter(q => ids.includes(Number(q.id)));
+  let reviewQs = getRoundWrongQuestions(rec);
 
   if (reviewQs.length === 0) { showToast('오답 문제를 찾을 수 없습니다.', true); return; }
   const modal = document.getElementById('roundFolderModal');
@@ -2097,18 +2141,17 @@ function startNewRound() {
 function confirmNewRound(btn) {
   btn.closest('.confirm-modal').remove();
 
-  const snapshot = {}; const wrongIds = []; const wrongQuestions = [];
+  const snapshot = {}; const wrongIds = [];
   questions.forEach(q => {
     if (q.wrongCount > 0) {
       snapshot[q.id] = q.wrongCount;
       wrongIds.push(q.id);
-      wrongQuestions.push({...q}); 
     }
   });
   roundHistory.push({
     roundNum: currentRound,
     startDate: new Date().toLocaleDateString('ko-KR'),
-    wrongCountSnapshot: snapshot, wrongIds: wrongIds, wrongQuestions: wrongQuestions,
+    wrongCountSnapshot: snapshot, wrongIds: wrongIds,
     allQuestions: questions.map(q => ({...q})),
     totalWrong: wrongIds.length, totalQuestions: questions.length
   });
@@ -2135,20 +2178,21 @@ function confirmNewRound(btn) {
 }
 
 function deleteRound(roundNum) {
-  if (!confirm(`${roundNum}회독 기록을 삭제하시겠습니까?`)) return;
   const lastCompleted = roundHistory[roundHistory.length - 1];
   if (!lastCompleted || lastCompleted.roundNum !== roundNum) { showToast('삭제는 가장 최근 회독만 가능합니다.', true); return; }
 
-  const rec = roundHistory.pop();
-  currentRound--;
-  questions.forEach(q => { q.wrongCount = 0; });
-  if (rec.wrongCountSnapshot) {
-    questions.forEach(q => { if (rec.wrongCountSnapshot[q.id]) q.wrongCount = rec.wrongCountSnapshot[q.id]; });
-  }
-  sessionAttempts = 0; sessionCorrect = 0; currentRoundWrong = {};
+  showConfirmModal('회독 삭제', `${roundNum}회독 기록을 삭제하시겠습니까?`, () => {
+    const rec = roundHistory.pop();
+    currentRound--;
+    questions.forEach(q => { q.wrongCount = 0; });
+    if (rec.wrongCountSnapshot) {
+      questions.forEach(q => { if (rec.wrongCountSnapshot[q.id]) q.wrongCount = rec.wrongCountSnapshot[q.id]; });
+    }
+    sessionAttempts = 0; sessionCorrect = 0; currentRoundWrong = {};
 
-  saveToStorage(); renderDashboard(); renderRoundPanel();
-  showToast(`${roundNum}회독 기록 삭제 완료.`);
+    saveToStorage(); renderDashboard(); renderRoundPanel();
+    showToast(`${roundNum}회독 기록 삭제 완료.`);
+  }, { danger: true, okLabel: '삭제' });
 }
 
 function showToast(msg, isError) {
@@ -2160,6 +2204,41 @@ function showToast(msg, isError) {
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
+}
+
+// 네이티브 confirm() 대체 — 파괴적 동작에 앱 톤에 맞는 모달 사용.
+// 네이티브 confirm()이 주던 것(Esc=취소, 뒤 화면 입력 차단)을 여기서 다시 보장한다:
+// 트리거 버튼 blur(뒤에 포커스 안 남김) + Esc 취소 + 배경 클릭 취소 + 중복 확인 방지.
+function showConfirmModal(title, message, onConfirm, opts) {
+  opts = opts || {};
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+
+  const modal = document.createElement('div');
+  modal.className = 'confirm-modal';
+  modal.innerHTML = `
+    <div class="confirm-box">
+      <h3>${title}</h3>
+      <p>${message}</p>
+      <div class="confirm-btns">
+        <button class="confirm-cancel">취소</button>
+        <button class="confirm-ok" style="${opts.danger ? 'background:linear-gradient(135deg,#e74c3c,#c0392b)' : ''}">${opts.okLabel || '확인'}</button>
+      </div>
+    </div>`;
+
+  let settled = false;
+  const onKeydown = (ev) => { if (ev.key === 'Escape') close(); };
+  const close = () => { document.removeEventListener('keydown', onKeydown); modal.remove(); };
+
+  modal.addEventListener('click', (ev) => { if (ev.target === modal) close(); });
+  document.addEventListener('keydown', onKeydown);
+  modal.querySelector('.confirm-cancel').onclick = close;
+  modal.querySelector('.confirm-ok').onclick = () => {
+    if (settled) return;
+    settled = true;
+    close();
+    onConfirm();
+  };
+  document.body.appendChild(modal);
 }
 
 // ========== QUIZ LOGIC ==========
@@ -2177,7 +2256,7 @@ function startWrongOnlyQuiz() {
 
 function startQuiz(mode) {
   const filtered = getFilteredQuestions(getCurrentQuestions());
-  if (filtered.length === 0) { alert('선택한 회차에 문제가 없습니다.'); return; }
+  if (filtered.length === 0) { showToast('선택한 회차에 문제가 없습니다.', true); return; }
   showSection('quiz');
   quizState = { questions: [...filtered], current: 0, correct: 0, wrong: [], answered: false, containerId: 'quizArea' };
   document.getElementById('quizSetup').style.display = 'none';
@@ -2194,7 +2273,7 @@ function showRandomSetup() {
 function startRandomQuiz(count) {
   const shuffled = [...getCurrentQuestions()].sort(() => Math.random() - 0.5);
   const qs = count > 0 ? shuffled.slice(0, Math.min(count, shuffled.length)) : shuffled;
-  if(qs.length === 0) { alert('풀 수 있는 문제가 없습니다.'); return; }
+  if(qs.length === 0) { showToast('풀 수 있는 문제가 없습니다.', true); return; }
   quizState = { questions: qs, current: 0, correct: 0, wrong: 0, answered: false, wrongIds: [] };
   document.getElementById('randomSetup').style.display = 'none';
   document.getElementById('randomArea').style.display = 'block';
@@ -2229,11 +2308,11 @@ function renderQuizQuestion(containerId) {
         ${isImportant(q) ? `<span class="star-badge">⭐ 중요</span>` : ''}
       </div>
       ${isImportant(q) ? `<div class="important-banner" style="margin-bottom:14px"><strong>⭐ 중요 문제</strong> — 여러 회독에서 틀린 취약 문제입니다. 틀리지 않도록 주의!</div>` : ''}
-      <div class="question-text">${q.question}</div>
+      <div class="question-text">${escapeHtml(q.question)}</div>
       <div class="choices" id="quizChoices">
         ${q.choices.map((c, i) => `
           <button class="choice-btn" onclick="selectAnswer(${i + 1}, '${containerId}')">
-            <span class="choice-number">${i + 1}</span><span class="choice-text">${c}</span>
+            <span class="choice-number">${i + 1}</span><span class="choice-text">${escapeHtml(c)}</span>
           </button>
         `).join('')}
       </div>
@@ -2364,7 +2443,7 @@ function showDetailedExplanation(qId, uid, btn) {
   if (inner) { inner.textContent = detail; inner.dataset.loaded = 'true'; }
 }
 
-function escapeHtml(str) { return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeHtml(str) { return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 // ========== NOTES & STATS ==========
 function populateRoundFilter() {
@@ -2397,15 +2476,57 @@ function renderNotes() {
       <div class="note-header" onclick="this.parentElement.classList.toggle('open')">
         <svg class="note-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         <div class="note-info">
-          <div class="note-badges"><span class="badge badge-year">${q.year}년 ${q.round}회</span><span class="badge badge-num">${q.number}번</span>${q.wrongCount > 0 ? `<span class="badge" style="background:var(--error-dim);color:var(--error)">오답 ${q.wrongCount}회</span>` : ''}${isImportant(q) ? `<span class="star-badge">⭐ 중요</span>` : ''}</div>
-          <div class="note-q">${q.question}</div>
+          <div class="note-badges">${q.tag ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)">${escapeHtml(q.tag)}</span>` : ''}<span class="badge badge-year">${q.year}년 ${q.round}회</span><span class="badge badge-num">${q.number}번</span>${q.wrongCount > 0 ? `<span class="badge" style="background:var(--error-dim);color:var(--error)">오답 ${q.wrongCount}회</span>` : ''}${isImportant(q) ? `<span class="star-badge">⭐ 중요</span>` : ''}</div>
+          <div class="note-q">${escapeHtml(q.question)}</div>
         </div>
       </div>
       <div class="note-body"><div class="note-body-inner">
         <div class="note-choices">${q.choices.map((c, i) => `<div class="note-choice ${i+1===q.correctAnswer?'note-choice-correct':''}"><span class="note-choice-num">${i+1}</span>${escapeHtml(c)}</div>`).join('')}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12px;color:var(--text-secondary)">
+          📌 핵심개념: ${q.concept ? escapeHtml(q.concept) : '<span style="color:var(--text-muted)">미입력</span>'}
+          <button onclick="event.stopPropagation();openTagConceptModal(${q.id})" style="padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font-size:11px;cursor:pointer">수정</button>
+        </div>
         <div class="note-explanation">${formatExplanation(q.explanation, q.id)}</div>
       </div></div>
     </div>`).join('');
+}
+
+function openTagConceptModal(qId) {
+  const q = questions.find(qq => qq.id === qId); if (!q) return;
+  const modal = document.createElement('div');
+  modal.className = 'confirm-modal';
+  modal.innerHTML = `
+    <div class="confirm-box" style="text-align:left">
+      <h3 style="margin-bottom:16px">🏷️ 태그·핵심개념 수정</h3>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>태그</label>
+        <input id="tcTagInput" list="tagDatalistModal" value="${escapeHtml(q.tag || '')}" style="width:100%;margin-top:6px">
+        <datalist id="tagDatalistModal">${certTagList.map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist>
+      </div>
+      <div class="form-group" style="margin-bottom:20px">
+        <label>핵심개념 (한 줄)</label>
+        <input id="tcConceptInput" list="conceptDatalistModal" value="${escapeHtml(q.concept || '')}" style="width:100%;margin-top:6px">
+        <datalist id="conceptDatalistModal">${certConceptList.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+      </div>
+      <div class="confirm-btns">
+        <button class="confirm-cancel" onclick="this.closest('.confirm-modal').remove()">취소</button>
+        <button class="confirm-ok" onclick="saveTagConcept(${qId}, this)">저장</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function saveTagConcept(qId, btn) {
+  const modal = btn.closest('.confirm-modal');
+  const tag = registerTag(modal.querySelector('#tcTagInput').value);
+  const concept = registerConcept(modal.querySelector('#tcConceptInput').value);
+  const q = questions.find(qq => qq.id === qId);
+  if (q) { q.tag = tag; q.concept = concept; }
+  const cq = customQuestions.find(qq => qq.id === qId);
+  if (cq) { cq.tag = tag; cq.concept = concept; }
+  saveCustomQuestions();
+  modal.remove();
+  renderNotes();
 }
 function filterNotes() { renderNotes(); }
 
@@ -2424,18 +2545,19 @@ function renderStats() {
     <div class="chart-bar-item"><div class="chart-label">${q.year}/${q.round}회-${q.number}번</div><div class="chart-bar-track"><div class="chart-bar-fill wrong-bar" style="width:${Math.max((q.wrongCount/maxW)*100,12)}%">${q.wrongCount}</div></div></div>`).join('');
   
   const sorted = [...questions].sort((a, b) => b.wrongCount - a.wrongCount).slice(0, 5);
-  document.getElementById('statsTopWrong').innerHTML = sorted.every(q=>q.wrongCount===0)?'<div class="no-data">오답 기록이 없습니다.</div>' : `<div class="most-wrong-list">${sorted.filter(q=>q.wrongCount>0).map(q=>`<div class="most-wrong-item" onclick="goToNote(${q.id})"><div class="wrong-badge">${q.wrongCount}회</div><div class="wrong-question">${q.number}번. ${q.question}</div></div>`).join('')}</div>`;
+  document.getElementById('statsTopWrong').innerHTML = sorted.every(q=>q.wrongCount===0)?'<div class="no-data">오답 기록이 없습니다.</div>' : `<div class="most-wrong-list">${sorted.filter(q=>q.wrongCount>0).map(q=>`<div class="most-wrong-item" onclick="goToNote(${q.id})"><div class="wrong-badge">${q.wrongCount}회</div><div class="wrong-question">${q.number}번. ${escapeHtml(q.question)}</div></div>`).join('')}</div>`;
 
   const rounds = [...new Set(questions.map(q => q.year + '-' + q.round))].sort();
   document.getElementById('rateChart').innerHTML = rounds.map(r => {
     const [y, rn] = r.split('-');
     const rqs = questions.filter(q => q.year === y && q.round === parseInt(rn));
-    const avg = Math.round(rqs.reduce((s,q) => s + (q.answerRate || 0), 0) / (rqs.length || 1));
+    const known = rqs.filter(q => q.answerRate != null);
+    const avg = known.length ? Math.round(known.reduce((s,q) => s + q.answerRate, 0) / known.length) : null;
     return `
       <div class="chart-bar-item">
         <div class="chart-label" style="min-width:90px;font-size:12px">${y}년 ${rn}회</div>
-        <div class="chart-bar-track"><div class="chart-bar-fill rate-bar" style="width:${avg}%"></div></div>
-        <div class="chart-value" style="font-size:12px">평균 ${avg}%</div>
+        <div class="chart-bar-track"><div class="chart-bar-fill rate-bar" style="width:${avg ?? 0}%"></div></div>
+        <div class="chart-value" style="font-size:12px">${avg != null ? `평균 ${avg}%` : '미확인'}</div>
       </div>`;
   }).join('');
 }
@@ -2474,18 +2596,22 @@ function getNextCustomId() { return customQuestions.length === 0 ? 200001 : Math
 function clearRawText() { document.getElementById('fRawText').value=''; document.getElementById('parsePreview').style.display='none'; parsedQuestions=[]; }
 
 function parseAndPreview() {
-  if(!currentCert) { alert("카테고리를 먼저 선택해주세요!"); return; }
-  const raw = document.getElementById('fRawText').value; 
-  if(!raw.trim()) { alert('텍스트를 입력하세요'); return; }
+  if(!currentCert) { showToast('카테고리를 먼저 선택해주세요!', true); return; }
+  const raw = document.getElementById('fRawText').value;
+  if(!raw.trim()) { showToast('텍스트를 입력하세요', true); return; }
   
   parsedQuestions = [];
   const lines = raw.replace(/\t/g,' ').split('\n').map(l=>l.trim());
-  let y=String(new Date().getFullYear()), r=1, i=0;
+  let y=String(new Date().getFullYear()), r=1, i=0, curTag='';
 
   while(i<lines.length) {
-    const dm=lines[i].match(/(\d{4})년\s*(\d{1,2})월/); 
+    const dm=lines[i].match(/(\d{4})년\s*(\d{1,2})월/);
     if(dm) {y=dm[1]; const m=parseInt(dm[2]); r=m<=5?1:m<=8?2:3;}
-    
+
+    // "N과목 : 이름" 헤더 감지 — 기존 태그 목록과 매칭해 재사용, 없으면 신규 등록
+    const sm=lines[i].match(/^\d+과목\s*[:：]?\s*(.+)/);
+    if(sm && sm[1].trim()) curTag=registerTag(sm[1].trim());
+
     const qm=lines[i].match(/^(\d+)\.\s*(.*)/);
     if(qm) {
       let num=parseInt(qm[1]), qt=qm[2]||'', choices=[]; i++;
@@ -2521,7 +2647,7 @@ function parseAndPreview() {
       while(i<lines.length){
         if(lines[i].includes('<문제 해설>')) inExp=true;
         if(!inExp && (/^\d+\.\s/.test(lines[i])||/^\d{4}년/.test(lines[i]))) break;
-        if(/^\d+과목\s*:/.test(lines[i])) break;
+        if(/^\d+과목\s*[:：]/.test(lines[i])) break;
         meta.push(lines[i]); 
         if(lines[i].includes('AI 질문용 복사')) { i++; break; }
         i++;
@@ -2530,24 +2656,28 @@ function parseAndPreview() {
       const mtxt=meta.join('\n');
       const uam=mtxt.match(/입력한\s*답\s*:\s*(\d+)/); if(uam) uA=parseInt(uam[1]);
       const am=mtxt.match(/정답\s*:\s*\[\s*(\d+)\s*\]/); if(am) cA=parseInt(am[1]);
-      let aRate=50; const arm=mtxt.match(/정답률\s*:\s*(\d+)/); if(arm) aRate=parseInt(arm[1]);
-      
-      const exm=mtxt.indexOf('<문제 해설>'); 
+      let aRate=null; const arm=mtxt.match(/정답률\s*:\s*(\d+)/); if(arm) aRate=parseInt(arm[1]);
+
+      const exm=mtxt.indexOf('<문제 해설>');
       if(exm!==-1) exp=mtxt.substring(exm+7).replace(/\[해설작성자.*?\]/g,'').replace(/AI 질문용 복사/g,'').replace(/<[^>]+>/g,'').trim();
       if(!exp) exp='해설이 없습니다.';
 
       parsedQuestions.push({
-        id: getNextCustomId() + parsedQuestions.length, 
-        year: y, round: r, number: num, question: qt, choices: choices, userAnswer: uA, correctAnswer: cA, answerRate: aRate, explanation: exp, needsAnswer: !cA, wrongCount: 0, isCustom: true
+        id: getNextCustomId() + parsedQuestions.length,
+        year: y, round: r, number: num, question: qt, choices: choices, userAnswer: uA, correctAnswer: cA, answerRate: aRate, explanation: exp, needsAnswer: !cA, wrongCount: 0, isCustom: true,
+        tag: curTag, concept: ''
       });
     } else i++;
   }
   
-  if(parsedQuestions.length === 0) { alert('파싱된 문제가 없습니다. 형식을 확인하세요.'); return; }
+  if(parsedQuestions.length === 0) { showToast('파싱된 문제가 없습니다. 형식을 확인하세요.', true); return; }
   
-  document.getElementById('parsePreview').style.display='block'; 
+  document.getElementById('parsePreview').style.display='block';
   document.getElementById('parseCount').textContent=`${parsedQuestions.length}문제`;
-  document.getElementById('parsedList').innerHTML = parsedQuestions.map((q,idx)=>`
+  document.getElementById('parsedList').innerHTML = `
+    <datalist id="tagDatalist">${certTagList.map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist>
+    <datalist id="conceptDatalist">${certConceptList.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+  ` + parsedQuestions.map((q,idx)=>`
     <div class="added-card" style="${q.needsAnswer?'border-color:#ffc107':''}">
       <div class="added-card-info" style="width:100%">
         <div class="added-card-meta">
@@ -2557,12 +2687,19 @@ function parseAndPreview() {
         </div>
         <div class="added-card-q" style="font-size:13px;margin-bottom:6px">${escapeHtml(q.question)}</div>
         ${q.choices.map((c,ci)=>`<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${ci+1}. ${escapeHtml(c)}</div>`).join('')}
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <input list="tagDatalist" placeholder="태그 (예: 냉동공학)" value="${escapeHtml(q.tag)}" oninput="setParsedTag(${idx},this.value)" style="flex:1;min-width:120px;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:12px">
+          <input list="conceptDatalist" placeholder="핵심개념 한 줄" value="${escapeHtml(q.concept)}" oninput="setParsedConcept(${idx},this.value)" style="flex:2;min-width:160px;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:12px">
+        </div>
         ${q.needsAnswer ? `<div style="margin-top:10px;display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:#ffc107;font-weight:700">정답 선택:</span>${[1,2,3,4].map(n=>`<button onclick="setParsedAnswer(${idx},${n})" id="pans_${idx}_${n}" style="width:30px;height:30px;border-radius:50%;border:2px solid var(--border);background:var(--bg-surface);color:var(--text-secondary);font-size:13px;font-weight:700;cursor:pointer;">${n}</button>`).join('')}</div>` : ''}
       </div>
     </div>`).join('');
-    
+
   document.getElementById('parsePreview').scrollIntoView({ behavior:'smooth', block:'start' });
 }
+
+function setParsedTag(idx, val) { if(parsedQuestions[idx]) parsedQuestions[idx].tag = val; }
+function setParsedConcept(idx, val) { if(parsedQuestions[idx]) parsedQuestions[idx].concept = val; }
 
 function setParsedAnswer(idx, num) {
   if (!parsedQuestions[idx]) return;
@@ -2580,15 +2717,19 @@ function setParsedAnswer(idx, num) {
 
 function confirmAddAll() {
   const stillNeeds = parsedQuestions.filter(q => q.needsAnswer);
-  if (stillNeeds.length > 0) { alert(`정답이 선택되지 않은 문제가 ${stillNeeds.length}개 있습니다.`); return; }
+  if (stillNeeds.length > 0) { showToast(`정답이 선택되지 않은 문제가 ${stillNeeds.length}개 있습니다.`, true); return; }
   if (parsedQuestions.length === 0) return;
 
-  parsedQuestions.forEach(q => { customQuestions.push(q); questions.push(q); });
+  parsedQuestions.forEach(q => {
+    q.tag = registerTag(q.tag);
+    q.concept = registerConcept(q.concept);
+    customQuestions.push(q); questions.push(q);
+  });
   _allQuestions = questions.slice();
-  
-  saveCustomQuestions(); saveToStorage(); clearRawText(); renderAddedList(); 
+
+  saveCustomQuestions(); saveToStorage(); clearRawText(); renderAddedList();
   buildQuizRoundPills(); populateRoundFilter(); populateMemoRoundFilter(); renderDashboard();
-  alert(`${parsedQuestions.length}문제 추가 완료!`);
+  showToast(`${parsedQuestions.length}문제 추가 완료!`);
   parsedQuestions = [];
 }
 
@@ -2679,33 +2820,83 @@ function renderReference() {
 
 // ========== EXPORT / IMPORT ==========
 function exportData() {
-  const obj = { customQuestions, roundHistory, currentRound, currentRoundWrong, sessionAttempts, sessionCorrect, wrongCounts: {} };
+  const obj = { customQuestions, roundHistory, currentRound, currentRoundWrong, sessionAttempts, sessionCorrect, wrongCounts: {}, tagList: certTagList, conceptList: certConceptList };
   questions.forEach(q => { if(q.wrongCount>0) obj.wrongCounts[q.id]=q.wrongCount; });
   const a = document.createElement('a');
   const catName = certCategories.find(c => c.id === currentCert)?.name || '백업';
   a.href = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(obj));
   a.download = `${catName}_오답노트.json`; a.click();
 }
+
+function sanitizeImportedQuestion(q, idx) {
+  if (!q || typeof q !== 'object') return null;
+  const choices = Array.isArray(q.choices) ? q.choices.slice(0, 4).map(c => String(c ?? '')) : ['', '', '', ''];
+  while (choices.length < 4) choices.push('');
+  const hasValidId = q.id !== undefined && q.id !== null && q.id !== '' && !isNaN(Number(q.id));
+  return {
+    id: hasValidId ? Number(q.id) : Date.now() + (idx || 0),
+    year: String(q.year ?? ''), round: Number(q.round) || 1, number: Number(q.number) || 0,
+    question: String(q.question ?? ''), choices,
+    userAnswer: q.userAnswer != null ? Number(q.userAnswer) : null,
+    correctAnswer: Number(q.correctAnswer) || null,
+    answerRate: q.answerRate != null && !isNaN(Number(q.answerRate)) ? Number(q.answerRate) : null,
+    explanation: String(q.explanation ?? ''),
+    // 자유 텍스트 방지 — 기존 목록 매칭 우선 (CLAUDE.md 원칙 4)
+    tag: registerTag(String(q.tag ?? '')), concept: registerConcept(String(q.concept ?? '')),
+    wrongCount: Number(q.wrongCount) || 0, isCustom: true
+  };
+}
+
 function importData(e) {
   const f = e.target.files[0]; if(!f) return;
   const r = new FileReader();
-  r.onload = async function(evt) {
+  r.onload = function(evt) {
+    let d;
     try {
-      const d = JSON.parse(evt.target.result);
-      if(confirm('데이터를 덮어씌우시겠습니까?')) {
-        if (!currentCert || !_uid()) { alert('먼저 자격증을 선택해주세요.'); return; }
-        const payload = {
-          progress: {
-            wrongCounts: d.wrongCounts||{}, sessionAttempts: d.sessionAttempts||0, sessionCorrect: d.sessionCorrect||0,
-            roundHistory: d.roundHistory||[], currentRound: d.currentRound||1, currentRoundWrong: d.currentRoundWrong||{}
-          },
-          customQuestions: Array.isArray(d.customQuestions) ? d.customQuestions : [],
-          updatedAt: new Date().toISOString()
-        };
+      d = JSON.parse(evt.target.result);
+      if (typeof d !== 'object' || d === null) throw new Error('invalid');
+    } catch(err) { showToast('파일 오류', true); return; }
+
+    if (!currentCert || !_uid()) { showToast('먼저 자격증을 선택해주세요.', true); return; }
+
+    showConfirmModal('데이터 불러오기', '데이터를 덮어씌우시겠습니까?', async () => {
+      // tag/concept 목록 먼저 합쳐둔다 — 아래 sanitizeImportedQuestion이 문제별
+      // tag/concept를 registerTag/registerConcept로 매칭할 때 이 목록을 기준으로 삼는다
+      (Array.isArray(d.tagList) ? d.tagList : []).filter(t => typeof t === 'string').forEach(registerTag);
+      (Array.isArray(d.conceptList) ? d.conceptList : []).filter(c => typeof c === 'string').forEach(registerConcept);
+
+      const cleanCustom = Array.isArray(d.customQuestions)
+        ? d.customQuestions.map(sanitizeImportedQuestion).filter(Boolean)
+        : [];
+      const cleanRoundHistory = Array.isArray(d.roundHistory) ? d.roundHistory.map(rh => ({
+        ...rh,
+        roundNum: Number(rh.roundNum) || 0,
+        totalWrong: Number(rh.totalWrong) || 0,
+        totalQuestions: Number(rh.totalQuestions) || 0
+      })) : [];
+
+      const payload = {
+        progress: {
+          wrongCounts: (d.wrongCounts && typeof d.wrongCounts === 'object') ? d.wrongCounts : {},
+          sessionAttempts: Number(d.sessionAttempts) || 0, sessionCorrect: Number(d.sessionCorrect) || 0,
+          roundHistory: cleanRoundHistory,
+          currentRound: Number(d.currentRound) || 1,
+          currentRoundWrong: (d.currentRoundWrong && typeof d.currentRoundWrong === 'object') ? d.currentRoundWrong : {}
+        },
+        customQuestions: cleanCustom,
+        tagList: certTagList,
+        conceptList: certConceptList,
+        updatedAt: new Date().toISOString()
+      };
+      try {
         await _fs().setDoc(_certDocRef(currentCert), payload);
-        alert('완료! 새로고침합니다.'); location.reload();
+        showToast('완료! 새로고침합니다.');
+        setTimeout(() => location.reload(), 800);
+      } catch (err) {
+        console.error(err);
+        showToast('저장 실패 — 네트워크를 확인하세요.', true);
       }
-    } catch(err) { console.error(err); alert('파일 오류'); }
+    }, { okLabel: '덮어쓰기', danger: true });
   };
   r.readAsText(f);
 }
