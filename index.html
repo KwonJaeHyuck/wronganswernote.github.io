@@ -2474,9 +2474,12 @@ async function generateExplanation(qId, btn) {
     const r = await fetch('/api/explain', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ question: q.question, choices: q.choices, correctAnswer: q.correctAnswer, concept: q.concept || '' })
+      body: JSON.stringify({ question: q.question, choices: q.choices, correctAnswer: q.correctAnswer, concept: q.concept || '', img: q.img || null })
     });
     const data = await r.json();
+    // pending: 서버 품질 게이트를 통과 못해 캐시에 안 남긴 상태 — q.explanation은
+    // 건드리지 않고 버튼을 다시 눌러 재시도할 수 있게 둔다
+    if (data.pending) { showToast(data.error || '해설 품질 검증 실패 — 다시 시도해주세요.', true); btn.disabled = false; btn.textContent = '🤖 AI 해설 생성'; return; }
     if (!r.ok || !data.text) { showToast(data.error || '해설 생성 실패', true); btn.disabled = false; btn.textContent = '🤖 AI 해설 생성'; return; }
 
     q.explanation = data.text;
