@@ -28,14 +28,15 @@ export default async function handler(req, res) {
     return res.status(403).json({ error: 'PRO 구독이 필요한 기능입니다.' });
   }
 
-  const limitCheck = await checkAndConsumeDailyLimit(uid, 'analyze', DAILY_LIMIT);
-  if (!limitCheck.allowed) {
-    return res.status(429).json({ error: `오늘의 AI 코칭 한도(${DAILY_LIMIT}회)를 모두 사용했습니다. 내일 다시 시도해주세요.` });
-  }
-
   const { stats, wrongQuestions } = req.body || {};
   if (!Array.isArray(stats) || !stats.length) {
     return res.status(400).json({ error: '통계 데이터가 없습니다.' });
+  }
+
+  // 입력 검증을 통과한 요청만 한도를 쓴다 — 잘못된 호출로 하루 한도가 새지 않게
+  const limitCheck = await checkAndConsumeDailyLimit(uid, 'analyze', DAILY_LIMIT);
+  if (!limitCheck.allowed) {
+    return res.status(429).json({ error: `오늘의 AI 코칭 한도(${DAILY_LIMIT}회)를 모두 사용했습니다. 내일 다시 시도해주세요.` });
   }
 
   const statsText = stats
