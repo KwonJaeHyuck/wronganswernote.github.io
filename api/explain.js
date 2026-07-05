@@ -19,6 +19,7 @@
  */
 import crypto from 'crypto';
 import { verifyLogin, firestoreAdmin } from '../lib/verifyPro.js';
+import { callGemini } from '../lib/gemini.js';
 
 const MODEL = 'gemini-2.5-flash'; // 런타임 해설 — 품질·비용 균형
 
@@ -75,18 +76,10 @@ ${concept ? `[핵심개념] ${concept}` : ''}
 4. 간결하게 5~8줄 이내로 작성하세요.`;
 
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 600 },
-        }),
-      }
-    );
-    if (!r.ok) throw new Error(`Gemini API ${r.status}`);
+    const r = await callGemini(MODEL, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 600 },
+    });
     const data = await r.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     if (!text) throw new Error('빈 응답');
@@ -104,6 +97,6 @@ ${concept ? `[핵심개념] ${concept}` : ''}
     return res.status(200).json({ text, cached: false });
   } catch (e) {
     console.error(e);
-    return res.status(502).json({ error: '해설 생성 실패' });
+    return res.status(502).json({ error: `해설 생성 실패: ${e.message}` });
   }
 }

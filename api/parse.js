@@ -15,6 +15,7 @@
  */
 import { verifyPro } from '../lib/verifyPro.js';
 import { checkPhotoQuota, incrementPhotoQuota } from '../lib/quota.js';
+import { callGemini } from '../lib/gemini.js';
 
 const MODEL = 'gemini-2.5-flash-lite'; // 전사 작업 — 창의성 불필요, 저비용 모델
 
@@ -61,30 +62,19 @@ export default async function handler(req, res) {
    새 태그를 간결하게 만드세요: ${JSON.stringify(tags || [])}`;
 
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { inline_data: { mime_type: 'image/jpeg', data: image } },
-              { text: prompt },
-            ],
-          }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 2000,
-            responseMimeType: 'application/json',
-          },
-        }),
-      }
-    );
-    if (!r.ok) {
-      const errBody = await r.text().catch(() => '');
-      throw new Error(`Gemini API ${r.status}: ${errBody.slice(0, 300)}`);
-    }
+    const r = await callGemini(MODEL, {
+      contents: [{
+        parts: [
+          { inline_data: { mime_type: 'image/jpeg', data: image } },
+          { text: prompt },
+        ],
+      }],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 2000,
+        responseMimeType: 'application/json',
+      },
+    });
     const data = await r.json();
     const finishReason = data.candidates?.[0]?.finishReason;
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';

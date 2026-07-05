@@ -12,6 +12,7 @@
  *    명시하고, 오답 문제의 concept(핵심개념) 필드만 근거로 제공한다.
  */
 import { verifyPro } from '../lib/verifyPro.js';
+import { callGemini } from '../lib/gemini.js';
 
 const MODEL = 'gemini-2.5-flash'; // 런타임 코칭 — 품질·비용 균형
 
@@ -55,21 +56,13 @@ ${statsText}
 ${wrongText || '(오답노트에 남은 문제 없음)'}`;
 
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2, // 코칭은 창의성보다 재현성 — 낮게 고정
-            maxOutputTokens: 500,
-          },
-        }),
-      }
-    );
-    if (!r.ok) throw new Error(`Gemini API ${r.status}`);
+    const r = await callGemini(MODEL, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.2, // 코칭은 창의성보다 재현성 — 낮게 고정
+        maxOutputTokens: 500,
+      },
+    });
     const data = await r.json();
     const text =
       data.candidates?.[0]?.content?.parts?.[0]?.text ??
@@ -77,6 +70,6 @@ ${wrongText || '(오답노트에 남은 문제 없음)'}`;
     return res.status(200).json({ text });
   } catch (e) {
     console.error(e);
-    return res.status(502).json({ error: 'AI 분석 서버 오류' });
+    return res.status(502).json({ error: `AI 분석 서버 오류: ${e.message}` });
   }
 }
