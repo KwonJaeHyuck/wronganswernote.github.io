@@ -13,17 +13,24 @@
  */
 import { verifyPro } from '../lib/verifyPro.js';
 import { callGemini } from '../lib/gemini.js';
+import { checkAndConsumeDailyLimit } from '../lib/rateLimit.js';
 
 const MODEL = 'gemini-2.5-flash'; // 런타임 코칭 — 품질·비용 균형
+const DAILY_LIMIT = 10; // 페어유즈 한도 (보고서 §9.2) — 코칭은 반복 호출할 이유가 적은 기능
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'POST only' });
   }
 
-  const { isPro } = await verifyPro(req);
+  const { isPro, uid } = await verifyPro(req);
   if (!isPro) {
     return res.status(403).json({ error: 'PRO 구독이 필요한 기능입니다.' });
+  }
+
+  const limitCheck = await checkAndConsumeDailyLimit(uid, 'analyze', DAILY_LIMIT);
+  if (!limitCheck.allowed) {
+    return res.status(429).json({ error: `오늘의 AI 코칭 한도(${DAILY_LIMIT}회)를 모두 사용했습니다. 내일 다시 시도해주세요.` });
   }
 
   const { stats, wrongQuestions } = req.body || {};

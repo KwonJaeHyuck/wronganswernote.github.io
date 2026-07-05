@@ -9,18 +9,22 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isOwner(uid);
 
-      // 최초 생성 시 plan/photoQuota 필드를 클라이언트가 넣지 못하게 막는다.
+      // 최초 생성 시 plan/photoQuota/dailyLimits 필드를 클라이언트가 넣지 못하게 막는다.
       // 기본값은 없어도 되고, 필요하면 서버(Admin SDK)가 채운다.
-      allow create: if isOwner(uid) && !('plan' in request.resource.data) && !('photoQuota' in request.resource.data);
+      allow create: if isOwner(uid) &&
+        !('plan' in request.resource.data) &&
+        !('photoQuota' in request.resource.data) &&
+        !('dailyLimits' in request.resource.data);
 
-      // 이후 수정 시 plan/photoQuota 필드가 있다면 기존 값과 반드시 같아야 한다 — 즉
-      // 클라이언트는 categories 등 다른 필드는 자유롭게 고칠 수 있지만 이 둘은 절대 못 바꾼다.
-      // plan은 결제 웹훅이, photoQuota는 api/parse.js가 firebase-admin(Admin SDK,
-      // 규칙 자체를 우회)으로만 갱신한다 — 그래야 클라이언트가 자기 월 사용량을
-      // 직접 초기화해서 무료 한도를 우회하는 걸 막는다.
+      // 이후 수정 시 이 세 필드가 있다면 기존 값과 반드시 같아야 한다 — 즉
+      // 클라이언트는 categories 등 다른 필드는 자유롭게 고칠 수 있지만 이건 절대 못 바꾼다.
+      // plan은 결제 웹훅이, photoQuota/dailyLimits는 각 api/*.js가 firebase-admin
+      // (Admin SDK, 규칙 자체를 우회)으로만 갱신한다 — 클라이언트가 자기 사용량을
+      // 직접 초기화해서 한도를 우회하는 걸 막는다.
       allow update: if isOwner(uid) &&
         request.resource.data.get('plan', null) == resource.data.get('plan', null) &&
-        request.resource.data.get('photoQuota', null) == resource.data.get('photoQuota', null);
+        request.resource.data.get('photoQuota', null) == resource.data.get('photoQuota', null) &&
+        request.resource.data.get('dailyLimits', null) == resource.data.get('dailyLimits', null);
 
       match /certifications/{certId} {
         allow read, write: if isOwner(uid);

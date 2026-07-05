@@ -20,8 +20,10 @@
 import crypto from 'crypto';
 import { verifyLogin, firestoreAdmin } from '../lib/verifyPro.js';
 import { callGemini } from '../lib/gemini.js';
+import { checkAndConsumeDailyLimit } from '../lib/rateLimit.js';
 
 const MODEL = 'gemini-2.5-flash'; // 런타임 해설 — 품질·비용 균형
+const DAILY_GEN_LIMIT = 20; // 캐시 미스(신규 생성)만 세는 페어유즈 한도 — 캐시 히트는 무제한 무료
 
 function hashQuestion(question, choices) {
   const normalized = String(question).trim() + '|' + (choices || []).map(c => String(c).trim()).join('|');
@@ -55,6 +57,12 @@ export default async function handler(req, res) {
   } catch (e) {
     console.error('캐시 조회 실패:', e.message);
     // 캐시 조회 실패해도 생성은 시도 — 원가만 조금 더 들 뿐 기능은 살아있어야 함
+  }
+
+  // 캐시 미스(신규 생성)만 한도 대상 — 캐시 히트는 위에서 이미 반환됨
+  const limitCheck = await checkAndConsumeDailyLimit(uid, 'explain', DAILY_GEN_LIMIT);
+  if (!limitCheck.allowed) {
+    return res.status(429).json({ error: `오늘의 신규 해설 생성 한도(${DAILY_GEN_LIMIT}회)를 모두 사용했습니다. 캐시된 해설은 계속 볼 수 있습니다.` });
   }
 
   const choiceText = choices.map((c, i) => `${i + 1}) ${c}`).join('\n');
