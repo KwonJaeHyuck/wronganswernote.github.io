@@ -2872,10 +2872,23 @@ async function handlePhotoUpload(e) {
 
     const qId = getNextCustomId();
     let imgUrl = null;
-    if (data.has_figure && data.figure_box) {
-      statusEl.textContent = '그림 저장 중...';
-      const cropped = cropFigure(img, data.figure_box);
-      if (cropped) imgUrl = await uploadFigure(cropped, qId);
+    let figureNote = '';
+    console.log('[사진파싱 응답]', data);
+
+    if (data.has_figure === true) {
+      if (!Array.isArray(data.figure_box) || data.figure_box.length !== 4) {
+        figureNote = ' / 그림 감지됐지만 좌표 없음';
+      } else {
+        const cropped = cropFigure(img, data.figure_box);
+        if (!cropped) {
+          figureNote = ` / 그림 좌표 이상함 [${data.figure_box.join(', ')}]`;
+        } else {
+          imgUrl = await uploadFigure(cropped, qId);
+          figureNote = imgUrl ? ' / 그림 저장 완료' : ' / 그림 업로드 실패(Storage 권한·규칙 확인)';
+        }
+      }
+    } else {
+      figureNote = ' / 그림 미감지(AI가 그림 없다고 판단)';
     }
 
     parsedQuestions = [{
@@ -2890,7 +2903,8 @@ async function handlePhotoUpload(e) {
     }];
 
     renderParsedPreview('1문제 (사진)');
-    statusEl.textContent = data.quota ? `이번 달 남은 무료 사진 파싱: ${data.quota.remaining}/${data.quota.limit}장` : '';
+    const quotaNote = data.quota ? `이번 달 남은 무료 사진 파싱: ${data.quota.remaining}/${data.quota.limit}장` : '';
+    statusEl.textContent = quotaNote + figureNote;
   } catch (err) {
     console.error(err);
     statusEl.textContent = '분석 실패 — 다시 시도해주세요.';
