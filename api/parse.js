@@ -74,16 +74,28 @@ export default async function handler(req, res) {
           }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 1200,
+            maxOutputTokens: 2000,
             responseMimeType: 'application/json',
           },
         }),
       }
     );
-    if (!r.ok) throw new Error(`Gemini API ${r.status}`);
+    if (!r.ok) {
+      const errBody = await r.text().catch(() => '');
+      throw new Error(`Gemini API ${r.status}: ${errBody.slice(0, 300)}`);
+    }
     const data = await r.json();
+    const finishReason = data.candidates?.[0]?.finishReason;
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+
+    let parsed;
+    try {
+      parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+    } catch (parseErr) {
+      console.error('JSON 파싱 실패, finishReason:', finishReason, '원문:', text.slice(0, 500));
+      const reasonNote = finishReason === 'MAX_TOKENS' ? ' (응답이 잘림 — 사진을 더 단순하게 찍어보세요)' : '';
+      throw new Error(`Gemini 응답이 JSON이 아님${reasonNote}`);
+    }
 
     // 실제로 파싱이 성공한 뒤에만 한도를 깎는다 — Gemini 오류로 실패한 호출은 무료
     if (!isPro) { try { await incrementPhotoQuota(uid); } catch (e) { console.error('한도 갱신 실패:', e.message); } }
@@ -91,6 +103,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...parsed, quota: isPro ? null : { remaining: Math.max(0, quota.remaining - 1), limit: quota.limit } });
   } catch (e) {
     console.error(e);
-    return res.status(502).json({ error: '사진 분석 실패' });
+    return res.status(502).json({ error: `사진 분석 실패: ${e.message}` });
   }
 }
