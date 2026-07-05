@@ -1189,6 +1189,9 @@ input{font-family:inherit; outline:none;}
   // (module 스크립트와 classic 스크립트는 스코프가 분리되어 있으므로 window를 브리지로 사용)
   window.firestoreAPI = { db, doc, getDoc, setDoc, deleteDoc };
 
+  // /api/* 호출 시 Authorization 헤더로 실어보낼 ID 토큰 — 서버(verifyPro)가 이걸로 uid·plan 검증
+  window.getIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.resolve(null);
+
   // 로그인 함수
   window.loginWithGoogle = () => {
     const btn = document.getElementById('googleLoginBtn');
@@ -1470,6 +1473,14 @@ input{font-family:inherit; outline:none;}
       <p style="color:var(--text-secondary);font-size:14px;margin-top:4px">comcbt.com 오답 텍스트를 그대로 녹여넣으면 자동으로 파싱합니다</p>
     </div>
 
+    <div class="add-form" style="margin-bottom:16px">
+      <div class="form-group full">
+        <label>📷 사진으로 추가 (PRO)</label>
+        <input type="file" accept="image/*" capture="environment" id="photoInput" onchange="handlePhotoUpload(event)">
+        <div id="photoStatus" style="font-size:12px;color:var(--text-muted);margin-top:4px"></div>
+      </div>
+    </div>
+
     <div class="add-form">
       <div class="form-group full">
         <label>텍스트 붙여넣기</label>
@@ -1547,6 +1558,12 @@ input{font-family:inherit; outline:none;}
       <h3>원래 시험 정답률</h3>
       <div id="rateChart" class="chart-bar-list"></div>
     </div>
+    <div class="chart-section">
+      <h3>태그별 취약점 (결정적 계산)</h3>
+      <div id="tagStatsChart" class="chart-bar-list"></div>
+      <button class="btn btn-primary" style="margin-top:14px" id="coachBtn" onclick="runCoach()">🤖 AI 취약점 코칭 받기 (PRO)</button>
+      <div id="coachResult" style="display:none;margin-top:14px;padding:14px 16px;background:var(--bg-surface);border:1px solid var(--border-light);border-radius:var(--radius-md);font-size:14px;line-height:1.7;white-space:pre-line;color:var(--text-primary)"></div>
+    </div>
     <div class="stats-most-wrong">
       <h3>가장 많이 틀린 문제 TOP 5</h3>
       <div id="statsTopWrong"></div>
@@ -1582,6 +1599,8 @@ let parsedQuestions = [];
 let selectedRefCategory = 'all';
 let certTagList = [];
 let certConceptList = [];
+// PRO 여부 표시는 UI 편의용일 뿐 — 실제 게이트는 서버(lib/verifyPro.js)의 Firestore plan 확인이 진짜다.
+let myPlan = 'free';
 
 // ========== FIRESTORE WRAPPER ==========
 // module 스크립트에서 window.firestoreAPI / window.currentUid 로 노출된 핸들을 사용
@@ -1602,6 +1621,7 @@ window.bootstrapUserData = async function () {
   const fs = _fs();
   try {
     const snap = await fs.getDoc(_userDocRef());
+    myPlan = (snap.exists() && snap.data().plan === 'pro') ? 'pro' : 'free';
     if (snap.exists() && Array.isArray(snap.data().categories) && snap.data().categories.length > 0) {
       certCategories = snap.data().categories;
     } else {
@@ -2560,6 +2580,8 @@ function renderStats() {
         <div class="chart-value" style="font-size:12px">${avg != null ? `평균 ${avg}%` : '미확인'}</div>
       </div>`;
   }).join('');
+
+  renderTagStatsChart();
 }
 
 function populateMemoRoundFilter() {
@@ -2671,9 +2693,14 @@ function parseAndPreview() {
   }
   
   if(parsedQuestions.length === 0) { showToast('파싱된 문제가 없습니다. 형식을 확인하세요.', true); return; }
-  
+
+  renderParsedPreview(`${parsedQuestions.length}문제`);
+}
+
+// parsedQuestions 배열을 미리보기 카드로 렌더 — 붙여넣기 파서·사진 파싱 공용
+function renderParsedPreview(countLabel) {
   document.getElementById('parsePreview').style.display='block';
-  document.getElementById('parseCount').textContent=`${parsedQuestions.length}문제`;
+  document.getElementById('parseCount').textContent = countLabel;
   document.getElementById('parsedList').innerHTML = `
     <datalist id="tagDatalist">${certTagList.map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist>
     <datalist id="conceptDatalist">${certConceptList.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
@@ -2700,6 +2727,128 @@ function parseAndPreview() {
 
 function setParsedTag(idx, val) { if(parsedQuestions[idx]) parsedQuestions[idx].tag = val; }
 function setParsedConcept(idx, val) { if(parsedQuestions[idx]) parsedQuestions[idx].concept = val; }
+
+// ========== PRO API 호출 공용 헬퍼 ==========
+// 실제 게이트는 서버(lib/verifyPro.js)에 있음 — 여기선 토큰 첨부 + 403/오류 시 토스트만 담당
+async function callProApi(endpoint, body) {
+  const token = (typeof window.getIdToken === 'function') ? await window.getIdToken() : null;
+  if (!token) { showToast('로그인이 필요합니다.', true); return null; }
+  try {
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(body)
+    });
+    if (r.status === 403) { showToast('PRO 구독이 필요한 기능입니다.', true); return null; }
+    if (!r.ok) { showToast('요청 실패 — 잠시 후 다시 시도하세요.', true); return null; }
+    return await r.json();
+  } catch (err) {
+    console.error(err);
+    showToast('네트워크 오류', true);
+    return null;
+  }
+}
+
+// ========== 사진 파싱 (PRO) ==========
+function compressImage(file, maxW, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality).split(',')[1]); // base64 부분만
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handlePhotoUpload(e) {
+  const file = e.target.files[0]; if (!file) return;
+  if (!currentCert) { showToast('카테고리를 먼저 선택해주세요!', true); e.target.value=''; return; }
+
+  const statusEl = document.getElementById('photoStatus');
+  statusEl.textContent = '사진 분석 중...';
+
+  try {
+    const base64 = await compressImage(file, 1280, 0.8);
+    const data = await callProApi('/api/parse', { image: base64, tags: certTagList });
+    if (!data || !data.q) { statusEl.textContent = data ? '문제를 인식하지 못했습니다.' : ''; e.target.value=''; return; }
+
+    const choices = Array.isArray(data.c) ? data.c.slice(0, 4).map(c => String(c ?? '')) : [];
+    while (choices.length < 4) choices.push('');
+
+    parsedQuestions = [{
+      id: getNextCustomId(),
+      year: String(new Date().getFullYear()), round: 1, number: 1,
+      question: String(data.q ?? ''), choices,
+      userAnswer: null, correctAnswer: Number(data.a) || null, answerRate: null,
+      explanation: String(data.expl ?? '') || '해설이 없습니다.',
+      needsAnswer: !data.a, wrongCount: 0, isCustom: true,
+      tag: registerTag(String(data.tag ?? '')), concept: registerConcept(String(data.concept ?? ''))
+    }];
+
+    renderParsedPreview('1문제 (사진)');
+    statusEl.textContent = '';
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = '분석 실패 — 다시 시도해주세요.';
+  }
+  e.target.value = '';
+}
+
+// ========== 태그별 취약점 (결정적 계산 — AI 개입 없음) ==========
+function tagStats() {
+  const byTag = {};
+  questions.forEach(q => {
+    const tag = q.tag || '미분류';
+    if (!byTag[tag]) byTag[tag] = { tag, total: 0, wrong: 0 };
+    byTag[tag].total++;
+    if (q.wrongCount > 0) byTag[tag].wrong++;
+  });
+  return Object.values(byTag).map(t => ({
+    tag: t.tag, total: t.total, correct: t.total - t.wrong,
+    rate: t.total > 0 ? Math.round(((t.total - t.wrong) / t.total) * 100) : null
+  }));
+}
+
+function renderTagStatsChart() {
+  const el = document.getElementById('tagStatsChart'); if (!el) return;
+  const stats = tagStats().filter(t => t.total > 0).sort((a,b) => (a.rate ?? 101) - (b.rate ?? 101));
+  el.innerHTML = stats.length === 0 ? '<div class="no-data">태그가 붙은 문제가 없습니다.</div>' : stats.map(t => `
+    <div class="chart-bar-item">
+      <div class="chart-label">${escapeHtml(t.tag)}</div>
+      <div class="chart-bar-track"><div class="chart-bar-fill rate-bar" style="width:${t.rate ?? 0}%"></div></div>
+      <div class="chart-value">${t.rate}%</div>
+    </div>`).join('');
+}
+
+// ========== AI 취약점 코칭 (PRO) — 통계는 위 tagStats()가 이미 계산, AI는 문장만 ==========
+async function runCoach() {
+  const btn = document.getElementById('coachBtn');
+  const resultEl = document.getElementById('coachResult');
+  if (btn) { btn.disabled = true; btn.textContent = '분석 중...'; }
+
+  const stats = tagStats().filter(t => t.total > 0);
+  const wrongQuestions = questions.filter(q => q.wrongCount > 0)
+    .map(q => ({ tag: q.tag || '미분류', q: q.question, concept: q.concept || '' }));
+
+  const data = await callProApi('/api/analyze', { stats, wrongQuestions });
+
+  if (btn) { btn.disabled = false; btn.textContent = '🤖 AI 취약점 코칭 받기 (PRO)'; }
+  if (data && data.text && resultEl) {
+    resultEl.style.display = 'block';
+    resultEl.textContent = data.text;
+  }
+}
 
 function setParsedAnswer(idx, num) {
   if (!parsedQuestions[idx]) return;

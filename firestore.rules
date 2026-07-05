@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+
+      // 최초 생성 시 plan 필드를 클라이언트가 넣지 못하게 막는다.
+      // plan 기본값(free)은 별도로 존재하지 않아도 되고, 필요하면 서버(Admin SDK)가 채운다.
+      allow create: if isOwner(uid) && !('plan' in request.resource.data);
+
+      // 이후 수정 시 plan 필드가 있다면 기존 값과 반드시 같아야 한다 — 즉 클라이언트는
+      // categories 등 다른 필드는 자유롭게 고칠 수 있지만 plan은 절대 못 바꾼다.
+      // plan은 결제 웹훅이 firebase-admin(Admin SDK, 규칙 자체를 우회)으로만 갱신한다.
+      allow update: if isOwner(uid) &&
+        request.resource.data.get('plan', null) == resource.data.get('plan', null);
+
+      match /certifications/{certId} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+  }
+}

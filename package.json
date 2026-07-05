@@ -1,0 +1,10 @@
+{
+  "name": "wronganswernote",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "자격증 오답노트 SaaS — 정적 프론트(index.html) + Vercel 서버리스 함수(api/*)",
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}
