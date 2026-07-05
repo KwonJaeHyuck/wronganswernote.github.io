@@ -5,8 +5,8 @@
  * 출력:  { q, c[4], a, tag, concept, expl, has_figure, figure_box }
  *
  * 설계 원칙:
- *  - API 키·PRO 게이트는 여기(서버)에만. 사진 파싱은 호출당 비용이 발생하므로
- *    PRO 게이트 대상 (무료 월 30장 한도는 클라이언트 카운터 + 여기 서버 검증 병행 예정).
+ *  - API 키는 여기(서버)에만. 게이트는 PRO 전용이 아니라 "무료 월 30장,
+ *    PRO 무제한" (보고서 §9.1) — checkPhotoQuota/incrementPhotoQuota로 처리.
  *  - 환각 통제: "사진에 보이는 것만" 전사. 해설이 사진에 없으면 빈 문자열 —
  *    해설을 지어내지 않는다. 정답 표시가 없으면 a=null.
  *  - tag/concept: CLAUDE.md 원칙 4 — 기존 목록(certTagList) 매칭 우선, 새 태그는
@@ -14,14 +14,20 @@
  *  - 그림 문제: 그림 영역 좌표(0~1 비율)를 반환 → 클라이언트가 잘라 보존.
  */
 import { verifyPro } from '../lib/verifyPro.js';
+import { checkPhotoQuota, incrementPhotoQuota } from '../lib/quota.js';
 
 const MODEL = 'gemini-2.5-flash-lite'; // 전사 작업 — 창의성 불필요, 저비용 모델
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
 
-  const { isPro } = await verifyPro(req);
-  if (!isPro) return res.status(403).json({ error: 'PRO 구독이 필요한 기능입니다.' });
+  const { isPro, uid } = await verifyPro(req);
+  if (!uid) return res.status(403).json({ error: '로그인이 필요합니다.' });
+
+  const quota = await checkPhotoQuota(uid, isPro);
+  if (!quota.allowed) {
+    return res.status(403).json({ error: '이번 달 무료 사진 파싱 30장을 모두 사용했습니다. PRO는 무제한입니다.', quota });
+  }
 
   const { image, tags } = req.body || {};
   if (!image) return res.status(400).json({ error: '이미지가 없습니다.' });
@@ -74,7 +80,11 @@ export default async function handler(req, res) {
     const data = await r.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    return res.status(200).json(parsed);
+
+    // 실제로 파싱이 성공한 뒤에만 한도를 깎는다 — Gemini 오류로 실패한 호출은 무료
+    if (!isPro) { try { await incrementPhotoQuota(uid); } catch (e) { console.error('한도 갱신 실패:', e.message); } }
+
+    return res.status(200).json({ ...parsed, quota: isPro ? null : { remaining: Math.max(0, quota.remaining - 1), limit: quota.limit } });
   } catch (e) {
     console.error(e);
     return res.status(502).json({ error: '사진 분석 실패' });

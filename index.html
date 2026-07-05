@@ -2778,9 +2778,9 @@ async function callProApi(endpoint, body) {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
       body: JSON.stringify(body)
     });
-    if (r.status === 403) { showToast('PRO 구독이 필요한 기능입니다.', true); return null; }
-    if (!r.ok) { showToast('요청 실패 — 잠시 후 다시 시도하세요.', true); return null; }
-    return await r.json();
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(data.error || '요청 실패 — 잠시 후 다시 시도하세요.', true); return null; }
+    return data;
   } catch (err) {
     console.error(err);
     showToast('네트워크 오류', true);
@@ -2836,7 +2836,7 @@ async function handlePhotoUpload(e) {
     }];
 
     renderParsedPreview('1문제 (사진)');
-    statusEl.textContent = '';
+    statusEl.textContent = data.quota ? `이번 달 남은 무료 사진 파싱: ${data.quota.remaining}/${data.quota.limit}장` : '';
   } catch (err) {
     console.error(err);
     statusEl.textContent = '분석 실패 — 다시 시도해주세요.';
