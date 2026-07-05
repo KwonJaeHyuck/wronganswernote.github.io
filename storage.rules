@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 그림 문제 크롭 이미지 저장 경로: users/{uid}/certifications/{certId}/figures/{qid}.jpg
+    // 본인 uid 하위 경로만 읽기/쓰기 가능 — 남의 사진에 접근 불가
+    match /users/{uid}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

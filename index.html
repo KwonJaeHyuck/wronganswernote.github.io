@@ -1166,6 +1166,9 @@ input{font-family:inherit; outline:none;}
   import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
   // Firestore(클라우드 동기화) 모듈 추가
   import { getFirestore, doc, getDoc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+  // Storage — 그림 문제 크롭 이미지 저장 (Firestore 문서 1MB 한도를 피하려고
+  // 이미지는 Storage에, Firestore엔 다운로드 URL 문자열만 저장한다)
+  import { getStorage, ref, uploadString, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-storage.js";
 
   // 📌 발급받으신 실제 설정값
   const firebaseConfig = {
@@ -1183,11 +1186,13 @@ input{font-family:inherit; outline:none;}
   const analytics = getAnalytics(app);
   const auth = getAuth(app);
   const db = getFirestore(app);
+  const storage = getStorage(app);
   const provider = new GoogleAuthProvider();
 
-  // ── 모듈 스코프의 Firestore 핸들을 일반 <script>(앱 로직)에서 쓸 수 있도록 window에 노출 ──
+  // ── 모듈 스코프의 Firestore/Storage 핸들을 일반 <script>(앱 로직)에서 쓸 수 있도록 window에 노출 ──
   // (module 스크립트와 classic 스크립트는 스코프가 분리되어 있으므로 window를 브리지로 사용)
   window.firestoreAPI = { db, doc, getDoc, setDoc, deleteDoc };
+  window.storageAPI = { storage, ref, uploadString, getDownloadURL };
 
   // /api/* 호출 시 Authorization 헤더로 실어보낼 ID 토큰 — 서버(verifyPro)가 이걸로 uid·plan 검증
   window.getIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.resolve(null);
@@ -2329,6 +2334,7 @@ function renderQuizQuestion(containerId) {
       </div>
       ${isImportant(q) ? `<div class="important-banner" style="margin-bottom:14px"><strong>⭐ 중요 문제</strong> — 여러 회독에서 틀린 취약 문제입니다. 틀리지 않도록 주의!</div>` : ''}
       <div class="question-text">${escapeHtml(q.question)}</div>
+      ${q.img ? `<img src="${escapeHtml(q.img)}" alt="문제 그림" style="max-width:100%;border-radius:var(--radius-md);margin-bottom:16px;display:block">` : ''}
       <div class="choices" id="quizChoices">
         ${q.choices.map((c, i) => `
           <button class="choice-btn" onclick="selectAnswer(${i + 1}, '${containerId}')">
@@ -2537,6 +2543,7 @@ function renderNotes() {
         <div class="note-info">
           <div class="note-badges">${q.tag ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)">${escapeHtml(q.tag)}</span>` : ''}<span class="badge badge-year">${q.year}년 ${q.round}회</span><span class="badge badge-num">${q.number}번</span>${q.wrongCount > 0 ? `<span class="badge" style="background:var(--error-dim);color:var(--error)">오답 ${q.wrongCount}회</span>` : ''}${isImportant(q) ? `<span class="star-badge">⭐ 중요</span>` : ''}</div>
           <div class="note-q">${escapeHtml(q.question)}</div>
+          ${q.img ? `<img src="${escapeHtml(q.img)}" alt="문제 그림" style="max-width:100%;border-radius:var(--radius-md);margin-top:8px;display:block">` : ''}
         </div>
       </div>
       <div class="note-body"><div class="note-body-inner">
@@ -2752,6 +2759,7 @@ function renderParsedPreview(countLabel) {
           ${q.needsAnswer ? `<span class="badge" style="background:rgba(255,193,7,0.15);color:#ffc107">⚠️ 정답 미확인</span>` : `<span class="badge" style="background:rgba(76,201,240,0.1);color:var(--accent)">정답 ${q.correctAnswer}번</span>`}
         </div>
         <div class="added-card-q" style="font-size:13px;margin-bottom:6px">${escapeHtml(q.question)}</div>
+        ${q.img ? `<img src="${escapeHtml(q.img)}" alt="문제 그림" style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block">` : ''}
         ${q.choices.map((c,ci)=>`<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${ci+1}. ${escapeHtml(c)}</div>`).join('')}
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
           <input list="tagDatalist" placeholder="태그 (예: 냉동공학)" value="${escapeHtml(q.tag)}" oninput="setParsedTag(${idx},this.value)" style="flex:1;min-width:120px;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:12px">
@@ -2789,25 +2797,61 @@ async function callProApi(endpoint, body) {
 }
 
 // ========== 사진 파싱 (PRO) ==========
-function compressImage(file, maxW, quality) {
+function loadImageEl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, maxW / img.width);
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', quality).split(',')[1]); // base64 부분만
-      };
+      img.onload = () => resolve(img);
       img.onerror = reject;
       img.src = e.target.result;
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function canvasToBase64(canvas, quality) { return canvas.toDataURL('image/jpeg', quality).split(',')[1]; }
+
+// L3 다이어트: 파싱용 사진은 768px 1타일로 축소해 입력 토큰 절감 (보고서 §4.4)
+function compressForParse(img, maxW, quality) {
+  const scale = Math.min(1, maxW / img.width);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvasToBase64(canvas, quality);
+}
+
+// 그림 영역(0~1 비율 좌표)을 원본 해상도에서 크롭 — 정답 유출 방지가 아니라 화질 보존 목적
+function cropFigure(img, box) {
+  if (!Array.isArray(box) || box.length !== 4) return null;
+  const [x0, y0, x1, y1] = box;
+  const sx = Math.max(0, Math.round(x0 * img.width));
+  const sy = Math.max(0, Math.round(y0 * img.height));
+  const sw = Math.round((x1 - x0) * img.width);
+  const sh = Math.round((y1 - y0) * img.height);
+  if (sw <= 0 || sh <= 0) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = sw; canvas.height = sh;
+  canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  return canvasToBase64(canvas, 0.9);
+}
+
+// 크롭한 그림을 Firestore가 아니라 Storage에 올린다 — 문제 문서(한 자격증당 1개)에
+// 이미지까지 박으면 Firestore 1MB 문서 한도를 금방 넘긴다. Firestore엔 URL만 남는다.
+async function uploadFigure(base64, qId) {
+  const sApi = window.storageAPI;
+  if (!sApi || !window.currentUid || !currentCert) return null;
+  try {
+    const path = `users/${window.currentUid}/certifications/${currentCert}/figures/${qId}.jpg`;
+    const fileRef = sApi.ref(sApi.storage, path);
+    await sApi.uploadString(fileRef, base64, 'base64', { contentType: 'image/jpeg' });
+    return await sApi.getDownloadURL(fileRef);
+  } catch (e) {
+    console.error('그림 업로드 실패:', e);
+    return null;
+  }
 }
 
 async function handlePhotoUpload(e) {
@@ -2818,21 +2862,31 @@ async function handlePhotoUpload(e) {
   statusEl.textContent = '사진 분석 중...';
 
   try {
-    const base64 = await compressImage(file, 1280, 0.8);
+    const img = await loadImageEl(file);
+    const base64 = compressForParse(img, 768, 0.8);
     const data = await callProApi('/api/parse', { image: base64, tags: certTagList });
     if (!data || !data.q) { statusEl.textContent = data ? '문제를 인식하지 못했습니다.' : ''; e.target.value=''; return; }
 
     const choices = Array.isArray(data.c) ? data.c.slice(0, 4).map(c => String(c ?? '')) : [];
     while (choices.length < 4) choices.push('');
 
+    const qId = getNextCustomId();
+    let imgUrl = null;
+    if (data.has_figure && data.figure_box) {
+      statusEl.textContent = '그림 저장 중...';
+      const cropped = cropFigure(img, data.figure_box);
+      if (cropped) imgUrl = await uploadFigure(cropped, qId);
+    }
+
     parsedQuestions = [{
-      id: getNextCustomId(),
+      id: qId,
       year: String(new Date().getFullYear()), round: 1, number: 1,
       question: String(data.q ?? ''), choices,
       userAnswer: null, correctAnswer: Number(data.a) || null, answerRate: null,
       explanation: String(data.expl ?? '') || '해설이 없습니다.',
       needsAnswer: !data.a, wrongCount: 0, isCustom: true,
-      tag: registerTag(String(data.tag ?? '')), concept: registerConcept(String(data.concept ?? ''))
+      tag: registerTag(String(data.tag ?? '')), concept: registerConcept(String(data.concept ?? '')),
+      img: imgUrl
     }];
 
     renderParsedPreview('1문제 (사진)');
@@ -3031,7 +3085,8 @@ function sanitizeImportedQuestion(q, idx) {
     explanation: String(q.explanation ?? ''),
     // 자유 텍스트 방지 — 기존 목록 매칭 우선 (CLAUDE.md 원칙 4)
     tag: registerTag(String(q.tag ?? '')), concept: registerConcept(String(q.concept ?? '')),
-    wrongCount: Number(q.wrongCount) || 0, isCustom: true
+    wrongCount: Number(q.wrongCount) || 0, isCustom: true,
+    img: (typeof q.img === 'string' && q.img.startsWith('http')) ? q.img : null
   };
 }
 
