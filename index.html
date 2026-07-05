@@ -2431,19 +2431,58 @@ function retryWrong(containerId) {
 }
 
 function formatExplanation(text, qId) {
-  if (!text) return '<div class="explanation-text">해설이 없습니다.</div>';
+  const wrapId = qId !== undefined ? `expl-${qId}` : null;
+
+  if (!text || text === '해설이 없습니다.') {
+    if (qId === undefined) return '<div class="explanation-text">해설이 없습니다.</div>';
+    return `<div id="${wrapId}" class="explanation-text">해설이 없습니다.<br>
+      <button class="detail-btn" style="margin-top:8px" onclick="generateExplanation(${qId}, this)">🤖 AI 해설 생성</button>
+    </div>`;
+  }
+
   let mainText = text; let tips = []; let match;
   const tipRegex = /💡\s*암기\s*포인트[:：]?\s*([\s\S]*?)(?=\n\n|$)/g;
   while ((match = tipRegex.exec(text)) !== null) { tips.push(match[1].trim()); mainText = mainText.replace(match[0], ''); }
-  
-  let html = `<div class="explanation-text">${escapeHtml(mainText.trim())}</div>`;
-  if (tips.length > 0) html += `<div class="tip-box"><strong>💡 암기 포인트</strong><br>${escapeHtml(tips.join('\n'))}</div>`;
-  
+
+  let inner = `<div class="explanation-text">${escapeHtml(mainText.trim())}</div>`;
+  if (tips.length > 0) inner += `<div class="tip-box"><strong>💡 암기 포인트</strong><br>${escapeHtml(tips.join('\n'))}</div>`;
+
   if (qId !== undefined) {
     const uid = 'detail-' + qId + '-' + Math.random().toString(36).substr(2,5);
-    html += `<button class="detail-btn" onclick="showDetailedExplanation(${qId}, '${uid}', this)">자세히 보기 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="detail-content" id="${uid}"><div class="detail-inner" id="${uid}-inner">로딩 중...</div></div>`;
+    inner += `<button class="detail-btn" onclick="showDetailedExplanation(${qId}, '${uid}', this)">자세히 보기 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button><div class="detail-content" id="${uid}"><div class="detail-inner" id="${uid}-inner">로딩 중...</div></div>`;
   }
-  return html;
+  return wrapId ? `<div id="${wrapId}">${inner}</div>` : inner;
+}
+
+// 해설 없는 문제에 "AI 해설 생성" 버튼 — 전역 캐시(api/explain.js)를 통해 생성/조회.
+// 정답 미확정 문제는 서버가 아예 생성을 거부한다 (원칙 1).
+async function generateExplanation(qId, btn) {
+  const q = questions.find(qq => qq.id === qId); if (!q) return;
+  if (!q.correctAnswer) { showToast('정답이 확정되지 않아 해설을 생성할 수 없습니다.', true); return; }
+
+  btn.disabled = true; btn.textContent = '생성 중...';
+  const token = (typeof window.getIdToken === 'function') ? await window.getIdToken() : null;
+  if (!token) { showToast('로그인이 필요합니다.', true); btn.disabled = false; btn.textContent = '🤖 AI 해설 생성'; return; }
+
+  try {
+    const r = await fetch('/api/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ question: q.question, choices: q.choices, correctAnswer: q.correctAnswer, concept: q.concept || '' })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.text) { showToast(data.error || '해설 생성 실패', true); btn.disabled = false; btn.textContent = '🤖 AI 해설 생성'; return; }
+
+    q.explanation = data.text;
+    saveCustomQuestions();
+    const wrap = document.getElementById(`expl-${qId}`);
+    if (wrap) wrap.outerHTML = formatExplanation(q.explanation, qId);
+    showToast(data.cached ? '캐시된 해설을 불러왔습니다.' : 'AI 해설 생성 완료!');
+  } catch (e) {
+    console.error(e);
+    showToast('네트워크 오류', true);
+    btn.disabled = false; btn.textContent = '🤖 AI 해설 생성';
+  }
 }
 
 function showDetailedExplanation(qId, uid, btn) {
