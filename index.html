@@ -2823,12 +2823,23 @@ function compressForParse(img, maxW, quality) {
   return canvasToBase64(canvas, quality);
 }
 
-// 그림 영역(0~1 비율 좌표)을 원본 해상도에서 크롭 — 정답 유출 방지가 아니라 화질 보존 목적
+// 그림 영역을 원본 해상도에서 크롭 — 정답 유출 방지가 아니라 화질 보존 목적.
+// 프롬프트로 0~1 비율을 요청해도 Gemini가 종종 구글 비전 API 관례인 0~1000
+// 스케일로 응답한다(실측 확인됨) — 값이 1을 넘으면 1000 스케일로 간주해 보정한다.
 function cropFigure(img, box) {
   if (!Array.isArray(box) || box.length !== 4) return null;
-  const [x0, y0, x1, y1] = box;
-  const sx = Math.max(0, Math.round(x0 * img.width));
-  const sy = Math.max(0, Math.round(y0 * img.height));
+  let [x0, y0, x1, y1] = box.map(Number);
+  if ([x0, y0, x1, y1].some(v => Math.abs(v) > 1)) {
+    x0 /= 1000; y0 /= 1000; x1 /= 1000; y1 /= 1000;
+  }
+  // 좌표가 뒤바뀐 경우 방어적으로 정렬 + 0~1 범위로 clamp
+  if (x1 < x0) [x0, x1] = [x1, x0];
+  if (y1 < y0) [y0, y1] = [y1, y0];
+  x0 = Math.min(Math.max(x0, 0), 1); x1 = Math.min(Math.max(x1, 0), 1);
+  y0 = Math.min(Math.max(y0, 0), 1); y1 = Math.min(Math.max(y1, 0), 1);
+
+  const sx = Math.round(x0 * img.width);
+  const sy = Math.round(y0 * img.height);
   const sw = Math.round((x1 - x0) * img.width);
   const sh = Math.round((y1 - y0) * img.height);
   if (sw <= 0 || sh <= 0) return null;
